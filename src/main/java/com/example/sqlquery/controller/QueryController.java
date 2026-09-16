@@ -5,10 +5,8 @@ import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.dto.QueryDTO;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.service.QueryService;
-import com.example.sqlquery.util.JwtUtil;
 import com.example.sqlquery.util.RateLimitUtil;
 import com.example.sqlquery.vo.QueryVO;
-import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -20,18 +18,18 @@ import org.springframework.web.bind.annotation.RestController;
 public class QueryController {
 
     private final QueryService queryService;
-    private final JwtUtil jwtUtil;
+
     private final RateLimitUtil rateLimitUtil;
 
-    public QueryController(QueryService queryService, JwtUtil jwtUtil, RateLimitUtil rateLimitUtil) {
+    public QueryController(QueryService queryService, RateLimitUtil rateLimitUtil) {
         this.queryService = queryService;
-        this.jwtUtil = jwtUtil;
+
         this.rateLimitUtil = rateLimitUtil;
     }
 
 
     @PostMapping("/execute")
-    public Result<QueryVO> execute(@Valid @RequestBody QueryDTO dto, HttpServletRequest request){
+    public Result<QueryVO> execute(@Valid @RequestBody QueryDTO dto){
         Long userId= UserContext.get();
         String key = "rate:query:" + userId;
         if (!rateLimitUtil.tryAcquireSlidingWindow(key, 10, 60)) {

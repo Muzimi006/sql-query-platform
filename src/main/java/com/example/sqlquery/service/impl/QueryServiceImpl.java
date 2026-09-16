@@ -8,7 +8,6 @@ import com.example.sqlquery.service.QueryHistoryService;
 import com.example.sqlquery.service.QueryService;
 import com.example.sqlquery.util.AesUtil;
 import com.example.sqlquery.util.ConnectionManager;
-import com.example.sqlquery.util.JdbcUrlUtil;
 import com.example.sqlquery.util.SqlValidateUtil;
 import com.example.sqlquery.vo.QueryVO;
 import org.springframework.stereotype.Service;
@@ -24,14 +23,12 @@ public class QueryServiceImpl implements QueryService {
 
     private final DbSourceService dbSourceService;
     private final QueryHistoryService queryHistoryService;
-    private final AesUtil aesUtil;
     private final ConnectionManager connectionManager;
     private static final int MAX_ROWS = 1000;
 
     public QueryServiceImpl(DbSourceService dbSourceService, QueryHistoryService queryHistoryService, AesUtil aesUtil, ConnectionManager connectionManager) {
         this.dbSourceService = dbSourceService;
         this.queryHistoryService = queryHistoryService;
-        this.aesUtil = aesUtil;
         this.connectionManager = connectionManager;
     }
 
@@ -76,7 +73,6 @@ public class QueryServiceImpl implements QueryService {
     }
 
     private QueryVO doExecute(DbSource dbSource, String sql) throws SQLException {
-        String url = JdbcUrlUtil.build(dbSource);
 
         try (Connection connection = connectionManager.getConnection(dbSource);
                 

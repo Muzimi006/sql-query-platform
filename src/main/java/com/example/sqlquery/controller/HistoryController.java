@@ -3,10 +3,10 @@ package com.example.sqlquery.controller;
 import com.example.sqlquery.common.Result;
 import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.service.QueryHistoryService;
-import com.example.sqlquery.util.JwtUtil;
+
 import com.example.sqlquery.vo.QueryHistoryVO;
 import com.baomidou.mybatisplus.core.metadata.IPage;
-import jakarta.servlet.http.HttpServletRequest;
+
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -16,15 +16,15 @@ import java.util.List;
 public class HistoryController {
 
     private final QueryHistoryService queryHistoryService;
-    private final JwtUtil jwtUtil;
 
-    public HistoryController(QueryHistoryService queryHistoryService, JwtUtil jwtUtil) {
+
+    public HistoryController(QueryHistoryService queryHistoryService) {
         this.queryHistoryService = queryHistoryService;
-        this.jwtUtil = jwtUtil;
+
     }
 
     @GetMapping
-    public Result<List<QueryHistoryVO>> list(HttpServletRequest request) {
+    public Result<List<QueryHistoryVO>> list() {
         Long userId = UserContext.get();
         return Result.success(queryHistoryService.listByUserId(userId));
     }
@@ -40,14 +40,14 @@ public class HistoryController {
     }
 
     @DeleteMapping("/{id}")
-    public Result<Void> delete(@PathVariable Long id, HttpServletRequest request) {
+    public Result<Void> delete(@PathVariable Long id) {
         Long userId = UserContext.get();
         queryHistoryService.deleteByIdAndUserId(id, userId);
         return Result.success();
     }
 
     @DeleteMapping
-    public Result<Void> clear(HttpServletRequest request) {
+    public Result<Void> clear() {
         Long userId = UserContext.get();
         queryHistoryService.clearByUserId(userId);
         return Result.success();

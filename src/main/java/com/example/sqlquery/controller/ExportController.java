@@ -5,9 +5,9 @@ import com.example.sqlquery.common.Result;
 import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.dto.ExportTaskDTO;
 import com.example.sqlquery.service.ExportService;
-import com.example.sqlquery.util.JwtUtil;
+
 import com.example.sqlquery.vo.ExportTaskVO;
-import jakarta.servlet.http.HttpServletRequest;
+
 import com.example.sqlquery.exception.BusinessException;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.File;
@@ -23,27 +23,27 @@ import java.util.List;
 public class ExportController {
 
     private final ExportService exportService;
-    private final JwtUtil jwtUtil;
 
-    public ExportController(ExportService exportService, JwtUtil jwtUtil) {
+
+    public ExportController(ExportService exportService) {
         this.exportService = exportService;
-        this.jwtUtil = jwtUtil;
+
     }
 
     @PostMapping
-    public Result<ExportTaskVO> create(@Valid @RequestBody ExportTaskDTO dto, HttpServletRequest request) {
+    public Result<ExportTaskVO> create(@Valid @RequestBody ExportTaskDTO dto) {
         Long userId = UserContext.get();
         return Result.success(exportService.createTask(userId, dto));
     }
 
     @GetMapping
-    public Result<List<ExportTaskVO>> list(HttpServletRequest request) {
+    public Result<List<ExportTaskVO>> list() {
         Long userId = UserContext.get();
         return Result.success(exportService.listByUserId(userId));
     }
 
     @GetMapping("/{id}/download")
-    public void download(@PathVariable Long id, HttpServletRequest request, HttpServletResponse response) throws IOException {
+    public void download(@PathVariable Long id, HttpServletResponse response) throws IOException {
         Long userId = UserContext.get();
         String filePath = exportService.getDownloadPath(userId, id);
         File file = new File(filePath);
