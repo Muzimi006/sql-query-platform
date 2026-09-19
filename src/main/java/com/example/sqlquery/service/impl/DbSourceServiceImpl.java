@@ -123,25 +123,85 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
     @Override
     public DbSource getByIdAndUserId(Long userId, Long id) {
         String cacheKey = CACHE_PREFIX + id;
-        String cached = redisTemplate.opsForValue().get(cacheKey);
+
+        String cached = getCacheQuietly(cacheKey);
+        if ("NULL".equals(cached)) {
+            throw new BusinessException("数据源不存在");
+        }
         if (cached != null) {
             try {
                 return objectMapper.readValue(cached, DbSource.class);
             } catch (Exception e) {
-                throw new BusinessException("缓存数据异常");
+                // 缓存内容异常，删除后走数据库
+                deleteCache(id);
             }
         }
 
-        DbSource dbSource = getById(id);
-        if (dbSource == null || !dbSource.getUserId().equals(userId)) {
-            throw new BusinessException("数据源不存在");
-        }
+        String lockKey = "lock:datasource:" + id;
+        Boolean locked = false;
         try {
-            redisTemplate.opsForValue().set(cacheKey, objectMapper.writeValueAsString(dbSource), CACHE_TTL);
+            locked = redisTemplate.opsForValue()
+                    .setIfAbsent(lockKey, "1", Duration.ofSeconds(10));
+        } catch (Exception e) {
+            // Redis 异常，直接查数据库
+        }
+
+        if (!Boolean.TRUE.equals(locked)) {
+            // 没拿到锁，等待一下再读缓存
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            String retryCached = getCacheQuietly(cacheKey);
+            if ("NULL".equals(retryCached)) {
+                throw new BusinessException("数据源不存在");
+            }
+            if (retryCached != null) {
+                try {
+                    return objectMapper.readValue(retryCached, DbSource.class);
+                } catch (Exception e) {
+                    deleteCache(id);
+                }
+            }
+        }
+
+        try {
+            DbSource dbSource = getById(id);
+            if (dbSource == null || !dbSource.getUserId().equals(userId)) {
+                setCacheQuietly(cacheKey, "NULL", Duration.ofMinutes(5));
+                throw new BusinessException("数据源不存在");
+            }
+
+            long randomTtl = CACHE_TTL.getSeconds()
+                    + java.util.concurrent.ThreadLocalRandom.current().nextInt(300);
+            setCacheQuietly(cacheKey, objectMapper.writeValueAsString(dbSource), Duration.ofSeconds(randomTtl));
+            return dbSource;
+        } finally {
+            if (Boolean.TRUE.equals(locked)) {
+                try {
+                    redisTemplate.delete(lockKey);
+                } catch (Exception e) {
+                    // 忽略释放锁失败
+                }
+            }
+        }
+    }
+
+    private String getCacheQuietly(String cacheKey) {
+        try {
+            return redisTemplate.opsForValue().get(cacheKey);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void setCacheQuietly(String cacheKey, String value, Duration ttl) {
+        try {
+            redisTemplate.opsForValue().set(cacheKey, value, ttl);
         } catch (Exception e) {
             // 缓存写入失败不影响主流程
         }
-        return dbSource;
     }
 
     @Override
@@ -170,7 +230,11 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
     }
 
     private void deleteCache(Long id) {
-        redisTemplate.delete(CACHE_PREFIX + id);
+        try {
+            redisTemplate.delete(CACHE_PREFIX + id);
+        } catch (Exception e) {
+            // 缓存删除失败不影响主流程
+        }
     }
 
     private DbSource toEntity(DbSourceDTO dto){
