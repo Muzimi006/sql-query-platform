@@ -79,3 +79,9 @@ CREATE TABLE IF NOT EXISTS audit_log (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   KEY idx_user_id (user_id)
 );
+
+CREATE USER IF NOT EXISTS 'query_user'@'%' IDENTIFIED BY 'QueryUser123456';
+
+GRANT SELECT ON sql_query_platform.* TO 'query_user'@'%';
+
+FLUSH PRIVILEGES;

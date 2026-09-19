@@ -1,6 +1,9 @@
 package com.example.sqlquery.service.impl;
 
 import com.example.sqlquery.dto.QueryDTO;
+import com.example.sqlquery.common.UserContext;
+import com.example.sqlquery.config.SqlPermissionConfig;
+import com.example.sqlquery.util.SqlType;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.service.DbSourceService;
@@ -16,6 +19,7 @@ import java.sql.*;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.Map;
 
 @Service
@@ -39,7 +43,8 @@ public class QueryServiceImpl implements QueryService {
         if (dbSource == null || !dbSource.getUserId().equals(userId)) {
             throw new BusinessException("数据源不存在");
         }
-        SqlValidateUtil.validateSelect(dto.getSql());
+        Set<SqlType> allowedTypes = SqlPermissionConfig.getByRole(UserContext.getRole());
+        SqlValidateUtil.validate(dto.getSql(), allowedTypes);
         long start = System.currentTimeMillis();
         try {
             QueryVO vo = doExecute(dbSource, dto.getSql());

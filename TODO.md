@@ -143,3 +143,42 @@
   - 以后改为读取 CSV 文件并写入 HTTP 响应流
   - 设置 `Content-Disposition` 响应头，支持浏览器下载
   - 处理文件名中文乱码和文件不存在情况
+
+
+## SQL 安全校验增强
+
+- [x] 防止多语句绕过
+  - 当前 `CCJSqlParserUtil.parse(sql)` 只解析第一条语句
+  - 改为 `parseStatements(sql)`，只允许单条语句
+  - 只允许单条 SELECT
+
+- [x] 拦截伪装成 SELECT 的危险结构
+  - 检查 `SELECT ... INTO OUTFILE`
+  - 检查 `SELECT ... INTO DUMPFILE`
+  - 检查 `LOAD_FILE`
+  - 检查 `SLEEP` / `BENCHMARK` 等危险函数
+  - 检查是否访问 `information_schema` / `mysql` 等系统库
+
+- [ ] 数据库层权限兜底
+  - 查询账号只授予 SELECT
+  - 不授予 FILE、PROCESS 等高危权限
+  - 限制只能访问业务库
+
+## 缓存三大问题
+
+- [ ] 缓存穿透
+  - 当前查询不存在的数据源时，不会缓存空值，每次都会打到 MySQL
+  - 方案一：缓存空值，设置较短过期时间（如 5 分钟）
+  - 方案二：布隆过滤器
+
+- [ ] 缓存击穿
+  - 热点数据缓存刚好过期时，大量请求同时打到 MySQL
+  - 方案一：分布式锁，只允许一个线程去查库
+  - 方案二：逻辑过期，异步更新缓存
+
+- [ ] 缓存雪崩
+  - 当前 TTL 固定 30 分钟，大量 key 可能同时过期
+  - Redis 异常时没有降级逻辑
+  - 方案一：TTL 加随机值
+  - 方案二：Redis 异常时降级查数据库
+  - 方案三：Redis 高可用（主从 + 哨兵 / Cluster）

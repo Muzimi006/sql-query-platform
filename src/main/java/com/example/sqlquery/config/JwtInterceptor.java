@@ -48,6 +48,7 @@ public class JwtInterceptor implements HandlerInterceptor {
             }
             jwtUtil.verifyToken(token);
             UserContext.set(jwtUtil.getUserId(token));
+            UserContext.setRole(jwtUtil.getRole(token));
             return true;
         } catch (JWTVerificationException e) {
             response.setStatus(401);

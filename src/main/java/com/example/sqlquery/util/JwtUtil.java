@@ -22,10 +22,11 @@ public class JwtUtil {
     /**
      * 生成 Token
      */
-    public String generateToken(Long userId, String username) {
+    public String generateToken(Long userId, String username, String role) {
         return JWT.create()
                 .withClaim("userId", userId)
                 .withClaim("username", username)
+                .withClaim("role", role)
                 .withExpiresAt(new Date(System.currentTimeMillis() + expireDays*24L*60*60*1000))
                 .sign(Algorithm.HMAC256(secret));
     }
@@ -51,6 +52,10 @@ public class JwtUtil {
      */
     public String getUsername(String token) {
         return verifyToken(token).getClaim("username").asString();
+    }
+
+    public String getRole(String token) {
+        return verifyToken(token).getClaim("role").asString();
     }
 
     public Long getUserIdFromRequest(HttpServletRequest request){

@@ -45,7 +45,7 @@ public class AuthController {
     public Result<LoginVO> login(@Valid @RequestBody LoginDTO dto){
         UserVO loggedIn = userService.login(dto.getUsername(), dto.getPassword());
 
-        String token = jwtUtil.generateToken(loggedIn.getId(),loggedIn.getUsername());
+        String token = jwtUtil.generateToken(loggedIn.getId(), loggedIn.getUsername(), loggedIn.getRole());
 
         LoginVO response = new LoginVO(token,loggedIn);
 
