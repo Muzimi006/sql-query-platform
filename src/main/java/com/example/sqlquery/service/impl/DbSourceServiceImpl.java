@@ -15,6 +15,9 @@ import com.example.sqlquery.vo.DbSourceVO;
 import com.example.sqlquery.util.ConnectionManager;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import java.util.Collections;
+import java.util.UUID;
 import java.time.Duration;
 import org.springframework.stereotype.Service;
 
@@ -34,6 +37,14 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
 
     private static final String CACHE_PREFIX = "datasource:";
     private static final Duration CACHE_TTL = Duration.ofMinutes(30);
+
+    private static final DefaultRedisScript<Long> UNLOCK_SCRIPT = new DefaultRedisScript<>(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then "
+                    + "return redis.call('del', KEYS[1]) "
+                    + "else return 0 end",
+            Long.class
+    );
+
 
     public DbSourceServiceImpl(AesUtil aesUtil, StringRedisTemplate redisTemplate, ObjectMapper objectMapper, ConnectionManager connectionManager) {
         this.aesUtil = aesUtil;
@@ -138,10 +149,11 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         }
 
         String lockKey = "lock:datasource:" + id;
+        String lockValue = UUID.randomUUID().toString();
         Boolean locked = false;
         try {
             locked = redisTemplate.opsForValue()
-                    .setIfAbsent(lockKey, "1", Duration.ofSeconds(10));
+                    .setIfAbsent(lockKey, lockValue, Duration.ofSeconds(10));
         } catch (Exception e) {
             // Redis 异常，直接查数据库
         }
@@ -180,7 +192,7 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         } finally {
             if (Boolean.TRUE.equals(locked)) {
                 try {
-                    redisTemplate.delete(lockKey);
+                    redisTemplate.execute(UNLOCK_SCRIPT, Collections.singletonList(lockKey), lockValue);
                 } catch (Exception e) {
                     // 忽略释放锁失败
                 }
