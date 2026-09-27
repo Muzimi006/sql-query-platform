@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.sqlquery.common.DbSourceStatus;
 import com.example.sqlquery.dto.DbSourceDTO;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.exception.BusinessException;
@@ -212,6 +213,17 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
                 }
             }
         }
+    }
+
+    @Override
+    public DbSource getEnabledByIdAndUserId(Long userId, Long id) {
+        DbSource dbSource = getByIdAndUserId(userId, id);
+
+        // 常量放在左边：status 字段在库里可空，写成 dbSource.getStatus().equals(...) 会 NPE
+        if (!Integer.valueOf(DbSourceStatus.ENABLED).equals(dbSource.getStatus())) {
+            throw new BusinessException("数据源已停用");
+        }
+        return dbSource;
     }
 
     private String getCacheQuietly(String cacheKey) {

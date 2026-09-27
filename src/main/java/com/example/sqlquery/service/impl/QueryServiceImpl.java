@@ -48,9 +48,9 @@ public class QueryServiceImpl implements QueryService {
 
     @Override
     public QueryVO execute(Long userId, QueryDTO dto) {
-        // 走「缓存 + 分布式锁」入口：数据源元数据是查询热路径上读得最多的数据，
+        // 走「缓存 + 分布式锁 + 启用状态校验」入口：数据源元数据是查询热路径上读得最多的数据，
         // 直接调 MyBatis-Plus 的 getById 会绕过 Redis 缓存，让缓存形同虚设
-        DbSource dbSource = dbSourceService.getByIdAndUserId(userId, dto.getDataSourceId());
+        DbSource dbSource = dbSourceService.getEnabledByIdAndUserId(userId, dto.getDataSourceId());
 
         Set<SqlType> allowedTypes = SqlPermissionConfig.getByRole(UserContext.getRole());
         SqlValidateUtil.validate(dto.getSql(), allowedTypes);

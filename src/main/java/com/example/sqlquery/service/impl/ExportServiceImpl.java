@@ -35,7 +35,8 @@ public class ExportServiceImpl implements ExportService {
 
     @Override
     public ExportTaskVO createTask(Long userId, ExportTaskDTO dto) {
-        DbSource dbSource = dbSourceService.getByIdAndUserId(userId, dto.getDataSourceId());
+        // 与查询链路同一个入口：归属校验 + 启用状态校验，两条链路防护等级保持一致
+        DbSource dbSource = dbSourceService.getEnabledByIdAndUserId(userId, dto.getDataSourceId());
 
         // 导出链路与查询链路共用同一套 SQL 审核与角色白名单，避免出现绕过防线的一致性缺口
         SqlValidateUtil.validate(dto.getSql(), SqlPermissionConfig.getByRole(UserContext.getRole()));

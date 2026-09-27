@@ -53,8 +53,10 @@ onMounted(loadSources)
       <label>
         数据源
         <select v-model.number="dataSourceId">
-          <option v-for="s in sources" :key="s.id" :value="s.id">
-            {{ s.name }}（{{ s.host }}:{{ s.port }}）
+          <!-- 已停用的数据源仍然列出来，但禁用选择并标注原因：
+               直接隐藏会让用户以为数据源丢了，标注出来才知道是被停用了 -->
+          <option v-for="s in sources" :key="s.id" :value="s.id" :disabled="s.status !== 1">
+            {{ s.name }}（{{ s.host }}:{{ s.port }}）{{ s.status === 1 ? '' : '（已停用）' }}
           </option>
         </select>
       </label>
