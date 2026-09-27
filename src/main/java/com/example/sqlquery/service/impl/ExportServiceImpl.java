@@ -1,6 +1,8 @@
 package com.example.sqlquery.service.impl;
 
+import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.config.RabbitConfig;
+import com.example.sqlquery.config.SqlPermissionConfig;
 import com.example.sqlquery.dto.ExportTaskDTO;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.entity.ExportTask;
@@ -8,6 +10,7 @@ import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.mapper.ExportTaskMapper;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.service.ExportService;
+import com.example.sqlquery.util.SqlValidateUtil;
 import com.example.sqlquery.vo.ExportTaskVO;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
@@ -32,10 +35,10 @@ public class ExportServiceImpl implements ExportService {
 
     @Override
     public ExportTaskVO createTask(Long userId, ExportTaskDTO dto) {
-        DbSource dbSource = dbSourceService.getById(dto.getDataSourceId());
-        if (dbSource == null || !dbSource.getUserId().equals(userId)) {
-            throw new BusinessException("数据源不存在");
-        }
+        DbSource dbSource = dbSourceService.getByIdAndUserId(userId, dto.getDataSourceId());
+
+        // 导出链路与查询链路共用同一套 SQL 审核与角色白名单，避免出现绕过防线的一致性缺口
+        SqlValidateUtil.validate(dto.getSql(), SqlPermissionConfig.getByRole(UserContext.getRole()));
 
         ExportTask task = new ExportTask();
         task.setUserId(userId);

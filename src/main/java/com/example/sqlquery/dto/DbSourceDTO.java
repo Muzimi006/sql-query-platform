@@ -24,6 +24,7 @@ public class DbSourceDTO {
     @NotBlank(message = "数据库用户名不能为空")
     private String username;
 
+    /** 客户端提交的明文密码，服务端加密后写入 DbSource.passwordEncrypted。 */
     @NotBlank(message = "数据库密码不能为空")
-    private String passwordEncrypted;
+    private String password;
 }
