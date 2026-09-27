@@ -13,11 +13,14 @@ import com.example.sqlquery.util.AesUtil;
 import com.example.sqlquery.util.JdbcUrlUtil;
 import com.example.sqlquery.vo.DbSourceVO;
 import com.example.sqlquery.util.ConnectionManager;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import java.util.Collections;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import java.time.Duration;
 import org.springframework.stereotype.Service;
 
@@ -27,6 +30,7 @@ import java.sql.SQLException;
 import java.util.List;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> implements DbSourceService {
 
@@ -36,6 +40,11 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
     private final ConnectionManager connectionManager;
 
     private static final String CACHE_PREFIX = "datasource:";
+
+    /** 缓存 key 的唯一构造入口：读、写、删都必须走这里，避免多处拼接不一致。 */
+    private String buildCacheKey(Long id) {
+        return CACHE_PREFIX + id;
+    }
     private static final Duration CACHE_TTL = Duration.ofMinutes(30);
 
     private static final DefaultRedisScript<Long> UNLOCK_SCRIPT = new DefaultRedisScript<>(
@@ -61,7 +70,7 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         DbSource dbSource = toEntity(dto);
         dbSource.setUserId(userId);
         dbSource.setStatus(1);
-        dbSource.setPasswordEncrypted(aesUtil.encrypt(dto.getPasswordEncrypted()));
+        dbSource.setPasswordEncrypted(aesUtil.encrypt(dto.getPassword()));
         save(dbSource);
     }
 
@@ -86,7 +95,7 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         }
         dbSource.setId(id);
         dbSource.setUserId(userId);
-        dbSource.setPasswordEncrypted(aesUtil.encrypt(dto.getPasswordEncrypted()));
+        dbSource.setPasswordEncrypted(aesUtil.encrypt(dto.getPassword()));
         updateById(dbSource);
         deleteCache(id);
         connectionManager.evict(id);
@@ -110,7 +119,7 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         try(Connection connection = DriverManager.getConnection(
                 url,
                 dbSource.getUsername(),
-                dto.getPasswordEncrypted())) {
+                dto.getPassword())) {
             return  true;
         }catch (SQLException e){
             throw new BusinessException("无法连接到数据库：" + e.getMessage());
@@ -133,7 +142,7 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
 
     @Override
     public DbSource getByIdAndUserId(Long userId, Long id) {
-        String cacheKey = CACHE_PREFIX + id;
+        String cacheKey = buildCacheKey(id);
 
         String cached = getCacheQuietly(cacheKey);
         if ("NULL".equals(cached)) {
@@ -156,6 +165,8 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
                     .setIfAbsent(lockKey, lockValue, Duration.ofSeconds(10));
         } catch (Exception e) {
             // Redis 异常，直接查数据库
+            log.warn("获取缓存回源锁失败，降级为直接查库。lockKey={}", lockKey, e);
+            locked = false;
         }
 
         if (!Boolean.TRUE.equals(locked)) {
@@ -185,9 +196,12 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
                 throw new BusinessException("数据源不存在");
             }
 
-            long randomTtl = CACHE_TTL.getSeconds()
-                    + java.util.concurrent.ThreadLocalRandom.current().nextInt(300);
-            setCacheQuietly(cacheKey, objectMapper.writeValueAsString(dbSource), Duration.ofSeconds(randomTtl));
+            // TTL 加随机值，避免大量缓存同时过期（缓存雪崩）
+            long randomTtl = CACHE_TTL.getSeconds() + ThreadLocalRandom.current().nextInt(300);
+            String cacheValue = writeJsonQuietly(dbSource);
+            if (cacheValue != null) {
+                setCacheQuietly(cacheKey, cacheValue, Duration.ofSeconds(randomTtl));
+            }
             return dbSource;
         } finally {
             if (Boolean.TRUE.equals(locked)) {
@@ -213,6 +227,15 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
             redisTemplate.opsForValue().set(cacheKey, value, ttl);
         } catch (Exception e) {
             // 缓存写入失败不影响主流程
+        }
+    }
+
+    private String writeJsonQuietly(DbSource dbSource) {
+        try {
+            return objectMapper.writeValueAsString(dbSource);
+        } catch (JsonProcessingException e) {
+            // 序列化失败只影响缓存，不影响主流程
+            return null;
         }
     }
 
@@ -243,7 +266,7 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
 
     private void deleteCache(Long id) {
         try {
-            redisTemplate.delete(CACHE_PREFIX + id);
+            redisTemplate.delete(buildCacheKey(id));
         } catch (Exception e) {
             // 缓存删除失败不影响主流程
         }
@@ -257,7 +280,7 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         dbSource.setPort(dto.getPort());
         dbSource.setDatabaseName(dto.getDatabaseName());
         dbSource.setUsername(dto.getUsername());
-        dbSource.setPasswordEncrypted(dto.getPasswordEncrypted());
+        dbSource.setPasswordEncrypted(dto.getPassword());
         return dbSource;
     }
 

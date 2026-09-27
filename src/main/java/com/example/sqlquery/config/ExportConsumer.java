@@ -42,10 +42,9 @@ public class ExportConsumer {
         exportTaskMapper.updateById(task);
 
         try {
-            DbSource dbSource = dbSourceService.getById(task.getDataSourceId());
-            if (dbSource == null) {
-                throw new BusinessException("数据源不存在");
-            }
+            // 消费者线程里没有 UserContext（不是 Web 线程），owner 从任务记录里取
+            DbSource dbSource = dbSourceService.getByIdAndUserId(
+                    task.getUserId(), task.getDataSourceId());
 
             File exportDir = new File("exports");
             if (!exportDir.exists()) {
