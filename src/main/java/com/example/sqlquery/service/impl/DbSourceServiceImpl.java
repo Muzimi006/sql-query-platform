@@ -70,7 +70,7 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         }
         DbSource dbSource = toEntity(dto);
         dbSource.setUserId(userId);
-        dbSource.setStatus(1);
+        dbSource.setStatus(DbSourceStatus.ENABLED);
         dbSource.setPasswordEncrypted(aesUtil.encrypt(dto.getPassword()));
         save(dbSource);
     }
@@ -261,6 +261,18 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
 
     @Override
     public void changeStatus(Long userId, Long id, Integer status) {
+        // 状态值只允许在 ENABLED / DISABLED 之间切换。
+        // 不做这个校验的话，PUT /api/datasource/{id}/status?status=99 会把 99 原样写进库：
+        // 行为上看着像「停用」（比较用的是 equals(ENABLED)），但库里留下的是脏值，
+        // 以后按 where status = 0 统计就查不到这条记录。
+        boolean validStatus = Integer.valueOf(DbSourceStatus.ENABLED).equals(status)
+                || Integer.valueOf(DbSourceStatus.DISABLED).equals(status);
+        if (!validStatus) {
+            throw new BusinessException("状态值不合法，只能是 "
+                    + DbSourceStatus.ENABLED + "（启用）或 "
+                    + DbSourceStatus.DISABLED + "（停用）");
+        }
+
         DbSource dbSource = getByIdAndUserId(userId, id);
         dbSource.setStatus(status);
         updateById(dbSource);
