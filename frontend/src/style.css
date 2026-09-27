@@ -1,0 +1,81 @@
+:root {
+  --border: #e3e6eb;
+  --muted: #6b7280;
+  --primary: #2563eb;
+  --danger: #dc2626;
+  font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: #1f2937;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #f7f8fa;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 24px;
+  background: #fff;
+  border-bottom: 1px solid var(--border);
+}
+
+.nav .brand { font-weight: 600; }
+.nav .spacer { flex: 1; }
+.nav a { color: var(--muted); text-decoration: none; }
+.nav a.router-link-active { color: var(--primary); font-weight: 600; }
+.nav .user { color: var(--muted); font-size: 14px; }
+
+.page { padding: 24px; max-width: 1200px; margin: 0 auto; }
+
+.card {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+h1, h2 { font-size: 18px; margin: 0 0 16px; }
+
+label { display: block; margin-bottom: 12px; font-size: 14px; }
+
+input, select, textarea {
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  background: #fff;
+}
+
+textarea { min-height: 120px; font-family: ui-monospace, Consolas, monospace; }
+
+button {
+  padding: 8px 14px;
+  border: 1px solid var(--primary);
+  border-radius: 6px;
+  background: var(--primary);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+}
+
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+button.ghost { background: #fff; color: var(--primary); }
+button.danger { background: #fff; color: var(--danger); border-color: var(--danger); }
+
+.error { color: var(--danger); font-size: 14px; }
+.muted { color: var(--muted); font-size: 13px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+th { background: #fafbfc; font-weight: 600; }
+
+.login { max-width: 360px; margin: 80px auto; }
+.row { display: flex; gap: 12px; align-items: flex-end; }
+.row > * { flex: 1; }
