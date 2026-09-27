@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: 编译 + 单元测试
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: maven
+
+      # 单元测试不依赖 MySQL / Redis / RabbitMQ；
+      # 需要中间件的用例打了 integration 标签，由 surefire 默认排除。
+      # 本地执行集成测试：docker compose up -d && mvn test -Dgroups=integration
+      - name: 编译并运行单元测试
+        run: mvn -B test
