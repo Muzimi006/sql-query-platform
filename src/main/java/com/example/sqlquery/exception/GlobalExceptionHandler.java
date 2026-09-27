@@ -1,6 +1,8 @@
 package com.example.sqlquery.exception;
 
 import com.example.sqlquery.common.Result;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.dao.DuplicateKeyException;
@@ -22,6 +24,22 @@ public class GlobalExceptionHandler {
         if (e.getBindingResult().getFieldError() != null) {
             message = e.getBindingResult().getFieldError().getDefaultMessage();
         }
+        return Result.error(message);
+    }
+
+    /**
+     * 方法级参数校验失败（@RequestParam / @PathVariable 上的 @Min、@Max 等）。
+     *
+     * <p>注意：这类校验抛的是 {@link ConstraintViolationException}，
+     * 和 @RequestBody 上 @Valid 失败抛的 {@link MethodArgumentNotValidException}
+     * 是<b>两个不同的异常</b>，必须分别处理，否则会落到兜底分支返回"系统异常"。
+     */
+    @ExceptionHandler(ConstraintViolationException.class)
+    public Result<Void> handleConstraintViolation(ConstraintViolationException e) {
+        String message = e.getConstraintViolations().stream()
+                .findFirst()
+                .map(ConstraintViolation::getMessage)
+                .orElse("参数错误");
         return Result.error(message);
     }
 

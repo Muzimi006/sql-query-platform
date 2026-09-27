@@ -1,5 +1,6 @@
 package com.example.sqlquery.controller;
 
+import com.example.sqlquery.common.PageConstants;
 import com.example.sqlquery.common.Result;
 import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.service.QueryHistoryService;
@@ -7,12 +8,17 @@ import com.example.sqlquery.service.QueryHistoryService;
 import com.example.sqlquery.vo.QueryHistoryVO;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
 @RestController
 @RequestMapping("/api/history")
+// 同 DbSourceController：方法级参数校验必须先加 @Validated
+@Validated
 public class HistoryController {
 
     private final QueryHistoryService queryHistoryService;
@@ -31,8 +37,12 @@ public class HistoryController {
 
     @GetMapping("/page")
     public Result<IPage<QueryHistoryVO>> page(
-            @RequestParam(defaultValue = "1") long page,
-            @RequestParam(defaultValue = "10") long size,
+            @RequestParam(defaultValue = "1")
+            @Min(value = 1, message = "页码不能小于 1") long page,
+            @RequestParam(defaultValue = "10")
+            @Min(value = 1, message = "每页条数不能小于 1")
+            @Max(value = PageConstants.MAX_PAGE_SIZE,
+                    message = "每页条数不能超过 " + PageConstants.MAX_PAGE_SIZE) long size,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long dataSourceId) {
         Long userId = UserContext.get();

@@ -1,5 +1,6 @@
 package com.example.sqlquery.controller;
 
+import com.example.sqlquery.common.PageConstants;
 import com.example.sqlquery.common.Result;
 import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.dto.DbSourceDTO;
@@ -9,12 +10,17 @@ import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.vo.DbSourceVO;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
 @RestController
 @RequestMapping("/api/datasource")
+// @Validated 是方法级参数校验的开关：只有加上它，@RequestParam 上的 @Min / @Max 才会生效
+@Validated
 public class DbSourceController {
 
     private final DbSourceService dbSourceService;
@@ -41,8 +47,12 @@ public class DbSourceController {
 
     @GetMapping("/page")
     public Result<IPage<DbSourceVO>> page(
-            @RequestParam(defaultValue = "1") long page,
-            @RequestParam(defaultValue = "10") long size) {
+            @RequestParam(defaultValue = "1")
+            @Min(value = 1, message = "页码不能小于 1") long page,
+            @RequestParam(defaultValue = "10")
+            @Min(value = 1, message = "每页条数不能小于 1")
+            @Max(value = PageConstants.MAX_PAGE_SIZE,
+                    message = "每页条数不能超过 " + PageConstants.MAX_PAGE_SIZE) long size) {
         Long userId = UserContext.get();
         return Result.success(dbSourceService.pageByUserId(userId, page, size));
     }
