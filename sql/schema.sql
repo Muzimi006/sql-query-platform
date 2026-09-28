@@ -30,7 +30,11 @@ CREATE TABLE IF NOT EXISTS data_source (
   status TINYINT DEFAULT 1,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  KEY idx_user_id (user_id)
+  -- 同一用户下数据源名称唯一。应用层的 checkNameUnique 是「先查再插」，
+  -- 并发下两个请求可能同时查到「不重名」—— 唯一索引才是真正的兜底。
+  -- 注意列顺序是 (user_id, name)：查询都是「按用户查」，最左前缀必须能用上。
+  -- 唯一索引的最左前缀就是 user_id，所以不再需要单独的 idx_user_id（冗余索引会拖慢写入）。
+  UNIQUE KEY uk_user_id_name (user_id, name)
 );
 
 CREATE TABLE IF NOT EXISTS query_history (
@@ -79,6 +83,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   KEY idx_user_id (user_id)
 );
+
+-- ============================================================
+-- 已经建过库的环境需要手动执行下面的迁移（新建库不用做）
+-- ============================================================
+--
+-- 先检查有没有重复数据，有的话必须先清理，否则加唯一索引会直接失败：
+--   SELECT user_id, name, COUNT(*) AS c
+--   FROM data_source GROUP BY user_id, name HAVING c > 1;
+--
+-- 加唯一索引（应用层查重挡不住并发，这一步才是真正的兜底）：
+--   ALTER TABLE data_source ADD UNIQUE KEY uk_user_id_name (user_id, name);
+--
+-- 删除被唯一索引覆盖的冗余普通索引：
+--   ALTER TABLE data_source DROP INDEX idx_user_id;
 
 CREATE USER IF NOT EXISTS 'query_user'@'%' IDENTIFIED BY 'QueryUser123456';
 

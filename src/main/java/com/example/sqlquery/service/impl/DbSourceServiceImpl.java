@@ -15,6 +15,7 @@ import com.example.sqlquery.util.JdbcUrlUtil;
 import com.example.sqlquery.vo.DbSourceVO;
 import com.example.sqlquery.util.ConnectionManager;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -72,7 +73,15 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         dbSource.setUserId(userId);
         dbSource.setStatus(DbSourceStatus.ENABLED);
         dbSource.setPasswordEncrypted(aesUtil.encrypt(dto.getPassword()));
-        save(dbSource);
+
+        try {
+            save(dbSource);
+        } catch (DuplicateKeyException e) {
+            // 上面的 checkNameUnique 是「先查再插」，并发下两个请求可能同时查到「不重名」，
+            // 这时由唯一索引 uk_user_id_name 兜底。不翻译的话会落到全局处理器，
+            // 报成「用户名已存在」—— 提示是错的。
+            throw new BusinessException("数据源名称已存在");
+        }
     }
 
     @Override
@@ -97,7 +106,14 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         dbSource.setId(id);
         dbSource.setUserId(userId);
         dbSource.setPasswordEncrypted(aesUtil.encrypt(dto.getPassword()));
-        updateById(dbSource);
+
+        try {
+            updateById(dbSource);
+        } catch (DuplicateKeyException e) {
+            // 改名到另一个已存在的名字，同样由唯一索引兜底
+            throw new BusinessException("数据源名称已存在");
+        }
+
         deleteCache(id);
         connectionManager.evict(id);
     }
