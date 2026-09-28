@@ -71,6 +71,12 @@ public class ExportServiceImpl implements ExportService {
         if (!"SUCCESS".equals(task.getStatus())) {
             throw new BusinessException("导出任务未完成");
         }
+        if (task.getFilePath() == null) {
+            // 文件已被 ExportFileCleaner 清理掉。
+            // 这个分支是必需的：不判的话 controller 里 new File(null) 会直接 NPE，
+            // 用户看到的是「系统异常」而不是「文件已过期」
+            throw new BusinessException("导出文件已过期清理，请重新导出");
+        }
         return task.getFilePath();
     }
 
@@ -80,7 +86,8 @@ public class ExportServiceImpl implements ExportService {
         vo.setDataSourceId(task.getDataSourceId());
         vo.setSqlText(task.getSqlText());
         vo.setStatus(task.getStatus());
-        vo.setFilePath(task.getFilePath());
+        // 只下发「能不能下载」，不下发服务器路径
+        vo.setDownloadable("SUCCESS".equals(task.getStatus()) && task.getFilePath() != null);
         vo.setRowCount(task.getRowCount());
         vo.setErrorMessage(task.getErrorMessage());
         vo.setCreatedAt(task.getCreatedAt());

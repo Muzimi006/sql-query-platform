@@ -17,6 +17,10 @@ spring:
       port: ${REDIS_PORT:6379}
       connect-timeout: 1s
       timeout: 400ms
+# 导出文件的保留策略：超过保留天数的 CSV 会被定时任务删除，并把数据库里的路径置空
+export:
+  file-retention-days: 7
+  clean-cron: "0 0 3 * * ?"
 jwt:
   
   secret: ${JWT_SECRET}
