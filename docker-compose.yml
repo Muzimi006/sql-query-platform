@@ -32,11 +32,15 @@ services:
       - mysql
       - redis
       - rabbitmq
+    # ⚠️ 以下凭据仅用于本地一键起演示环境，不要用于任何真实部署。
+    #    生产环境必须替换为强随机值，并通过密钥管理服务注入。
+    #    AES_KEY 的长度必须是 16 / 24 / 32 字符 —— 这是 AES 的算法约束，
+    #    长度不对时应用在加解密数据源密码时会直接失败。
     environment:
       DB_USERNAME: root
       DB_PASSWORD: 123456
-      JWT_SECRET: MyJwtSecretKey1234567890
-      AES_KEY: SqlQueryPlatform123
+      JWT_SECRET: LocalDemoJwtSecretKeyChangeMe1234567890
+      AES_KEY: SqlQueryPlatformDemoKey32Bytes!!
       RABBITMQ_HOST: rabbitmq
       REDIS_HOST: redis
     ports:

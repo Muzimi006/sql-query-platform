@@ -29,7 +29,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * UserContext.setRole(jwtUtil.getRole(token));   // 内部又 verifyToken → 第 3 次
  * </pre>
  * 每个请求白验 3 次 HMAC-SHA256。三个方法各自看都「自洽」，
- * 拼在一起才暴露出重复 —— 这正是 AI 生成的代码最典型的失效方式。
+ * 拼在一起才暴露出重复 —— 这类问题逐个方法 review 发现不了，
+ * 只有从调用方视角看整条链路才会暴露。
  */
 class JwtInterceptorVerifyCountTest {
 

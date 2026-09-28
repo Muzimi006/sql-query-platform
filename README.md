@@ -6,9 +6,6 @@
 
 GitHub：https://github.com/Muzimi006/sql-query-platform
 
-> **这个项目是怎么用 AI 做出来的？** → [docs/ai-assisted-development.md](docs/ai-assisted-development.md)
-> 里面记录了工具分工、任务怎么拆、卡在哪里、以及**怎么判断 AI 给的结果能不能用**。
-
 ---
 
 ## 核心设计
@@ -21,27 +18,27 @@ GitHub：https://github.com/Muzimi006/sql-query-platform
 
 | 层 | 手段 | 拦什么 |
 |---|---|---|
-| 解析层 | JSqlParser \`parseStatements\` + 角色白名单 | 多语句注入（\`select 1; drop table x\`）、非 SELECT 语句 |
-| 关键字层 | 危险结构匹配 | \`INTO OUTFILE\` / \`INTO DUMPFILE\` / \`LOAD_FILE\` / \`SLEEP\` / \`BENCHMARK\`、系统库访问 |
-| 资源层 | \`setMaxRows(1000 + 1)\` + \`setQueryTimeout(30s)\` | 大结果集打爆内存、慢查询长期占用连接 |
+| 解析层 | JSqlParser `parseStatements` + 角色白名单 | 多语句注入（`select 1; drop table x`）、非 SELECT 语句 |
+| 关键字层 | 危险结构匹配 | `INTO OUTFILE` / `INTO DUMPFILE` / `LOAD_FILE` / `SLEEP` / `BENCHMARK`、系统库访问 |
+| 资源层 | `setMaxRows(1000 + 1)` + `setQueryTimeout(30s)` | 大结果集打爆内存、慢查询长期占用连接 |
 | 数据库层 | 建议配合只读账号（见「已知限制」） | 应用层被绕过后的兜底 |
 
-> **查询链路和导出链路共用同一套校验入口**（\`SqlValidateUtil\` + \`SqlPermissionConfig\`）。
+> **查询链路和导出链路共用同一套校验入口**（`SqlValidateUtil` + `SqlPermissionConfig`）。
 > 早期版本导出链路漏了这一步，是一个真实的一致性缺口 —— 同一个数据源、同一个连接池，两条入口的安全级别却不一样。
 
 ### 2. 动态多数据源连接池
 
 不是静态配置多数据源，而是**按数据源记录动态创建 / 销毁连接池**：
 
-- 每个数据源一个独立 HikariCP 池，缓存在 \`ConcurrentHashMap\` 里
-- 数据源**修改 / 删除 / 禁用**时同步 \`evict\` 并关闭旧池 —— 否则改完连接信息还在用旧池，且池会泄漏
+- 每个数据源一个独立 HikariCP 池，缓存在 `ConcurrentHashMap` 里
+- 数据源**修改 / 删除 / 禁用**时同步 `evict` 并关闭旧池 —— 否则改完连接信息还在用旧池，且池会泄漏
 - 连接信息（含密码）从 Redis 缓存取，缓存未命中回源数据库
 
 ### 3. 缓存一致性与三大问题
 
 数据源元数据缓存 30 分钟，并且专门处理了三种失效场景：
 
-- **穿透**：查不到的记录缓存空值（\`"NULL"\`，5 分钟 TTL），避免每次都打到数据库
+- **穿透**：查不到的记录缓存空值（`"NULL"`，5 分钟 TTL），避免每次都打到数据库
 - **击穿**：热点 key 过期时用 **Redis 分布式锁**（唯一 token + Lua 脚本释放）保证只有一个线程回源
 - **雪崩**：TTL 加随机值（+0~300 秒），避免大量 key 同时过期；Redis 异常时降级直接查库
 
@@ -51,27 +48,27 @@ GitHub：https://github.com/Muzimi006/sql-query-platform
 
 两种算法都是 **Redis 内 Lua 原子执行**：
 
-- **固定窗口**：\`INCR\` 与首次 \`PEXPIRE\` 必须原子 —— 分两步发命令时若进程在中间退出，key 会永不过期，用户被**永久限流**
+- **固定窗口**：`INCR` 与首次 `PEXPIRE` 必须原子 —— 分两步发命令时若进程在中间退出，key 会永不过期，用户被**永久限流**
 - **滑动窗口**：ZSet 记录每次请求的时间戳，任意长度窗口内计数精确；member 用「时间戳 + UUID」保证唯一 —— 用纯时间戳做 member 时，**同一毫秒的并发请求会互相覆盖**，导致少计数、限流被绕过
 
 ### 5. 密码与凭据
 
-- 用户密码：BCrypt（只引 \`spring-security-crypto\`，不引整个 security 全家桶）
-- 数据源密码：**AES/GCM/NoPadding**，每次随机 12 字节 IV，密文格式 \`v1:\` + Base64(IV ‖ 密文+认证标签)
+- 用户密码：BCrypt（只引 `spring-security-crypto`，不引整个 security 全家桶）
+- 数据源密码：**AES/GCM/NoPadding**，每次随机 12 字节 IV，密文格式 `v1:` + Base64(IV ‖ 密文+认证标签)
   - 相比 ECB：GCM 是认证加密，自带完整性校验；随机 IV 保证**相同明文不会产生相同密文**
   - 保留只读的历史 ECB 解密分支，用于存量数据迁移
   - 密钥长度在启动阶段校验（16/24/32 字节），配错立刻失败而不是运行期报晦涩异常
 
 ### 6. 异步导出
 
-导出任务走 RabbitMQ：接口只落一条 \`PENDING\` 记录就返回，消费者执行后推进状态机
-\`PENDING → RUNNING → SUCCESS / FAILED\`，失败原因落库可查；CSV 做了引号/逗号/换行的转义。
+导出任务走 RabbitMQ：接口只落一条 `PENDING` 记录就返回，消费者执行后推进状态机
+`PENDING → RUNNING → SUCCESS / FAILED`，失败原因落库可查；CSV 做了引号/逗号/换行的转义。
 
 ---
 
 ## 一次查询请求的完整链路
 
-\`\`\`text
+```text
 POST /api/query/execute
   │
   ├─ JwtInterceptor     校验 Bearer Token → 查 Redis 黑名单 → 写入 UserContext(ThreadLocal)
@@ -87,11 +84,11 @@ POST /api/query/execute
   ├─ QueryHistoryService 记录历史（成功/失败、耗时、错误信息）
   │
   └─ AuditLogAspect     AOP 记录写操作审计日志
-\`\`\`
+```
 
 ## 一次导出任务的完整链路
 
-\`\`\`text
+```text
 POST /api/export  →  校验数据源归属 + SQL 审核（与查询链路同一套）
                   →  落库 ExportTask(PENDING)
                   →  RabbitMQ 投递 taskId
@@ -99,7 +96,7 @@ POST /api/export  →  校验数据源归属 + SQL 审核（与查询链路同�
                   →  SUCCESS / FAILED（错误信息落库）
 
 GET /api/export/{id}/download  →  校验归属 + 任务状态 → 流式写回 CSV
-\`\`\`
+```
 
 ---
 
@@ -134,7 +131,7 @@ GET /api/export/{id}/download  →  校验归属 + 任务状态 → 流式写回
 
 ## 项目结构
 
-\`\`\`text
+```text
 src/main/java/com/example/sqlquery
 ├── common       // 统一返回、ThreadLocal 用户上下文
 ├── config       // 配置类、拦截器、AOP、SQL 权限、消费者
@@ -146,7 +143,7 @@ src/main/java/com/example/sqlquery
 ├── service      // 业务层
 ├── util         // JWT、AES、JDBC、连接池、限流等工具
 └── vo           // 返回对象
-\`\`\`
+```
 
 ---
 
@@ -162,32 +159,32 @@ src/main/java/com/example/sqlquery
 
 ### 配置环境变量
 
-\`\`\`text
+```text
 DB_USERNAME=root
 DB_PASSWORD=你的数据库密码
 JWT_SECRET=你的JWT密钥
 AES_KEY=你的AES密钥（16/24/32字符）
 RABBITMQ_HOST=localhost
 REDIS_HOST=localhost
-\`\`\`
+```
 
 ### 初始化数据库
 
-执行 \`sql/schema.sql\` 中的建库建表语句。
+执行 `sql/schema.sql` 中的建库建表语句。
 
 ### 启动
 
-\`\`\`bash
+```bash
 ./mvnw.cmd spring-boot:run
-\`\`\`
+```
 
-默认地址：\`http://localhost:8080\`
+默认地址：`http://localhost:8080`
 
 ### Docker 启动
 
-\`\`\`bash
+```bash
 docker compose up -d
-\`\`\`
+```
 
 ---
 
@@ -197,10 +194,10 @@ docker compose up -d
 
 | 层 | 命令 | 依赖 |
 |---|---|---|
-| 单元测试 | \`mvn test\` | 无（纯逻辑：AES、JDBC URL、SQL 校验、限流脚本） |
-| 集成测试 | \`docker compose up -d && mvn test -Dgroups=integration\` | MySQL / Redis / RabbitMQ |
+| 单元测试 | `mvn test` | 无（纯逻辑：AES、JDBC URL、SQL 校验、限流脚本） |
+| 集成测试 | `docker compose up -d && mvn test -Dgroups=integration` | MySQL / Redis / RabbitMQ |
 
-需要中间件的用例打了 \`@Tag("integration")\`，由 surefire 默认排除；CI（GitHub Actions）跑的是无依赖的单元测试层。
+需要中间件的用例打了 `@Tag("integration")`，由 surefire 默认排除；CI（GitHub Actions）跑的是无依赖的单元测试层。
 
 ---
 
@@ -208,45 +205,39 @@ docker compose up -d
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | \`/api/auth/register\` | 注册 |
-| POST | \`/api/auth/login\` | 登录 |
-| POST | \`/api/auth/logout\` | 登出 |
-| POST | \`/api/datasource\` | 添加数据源 |
-| GET | \`/api/datasource\` | 数据源列表 |
-| GET | \`/api/datasource/page\` | 数据源分页 |
-| POST | \`/api/datasource/test\` | 测试连接 |
-| PUT | \`/api/datasource/{id}/status\` | 启用 / 禁用数据源 |
-| POST | \`/api/query/execute\` | 执行 SQL |
-| GET | \`/api/history\` | 查询历史 |
-| GET | \`/api/history/page\` | 历史分页 / 筛选 |
-| POST | \`/api/favorite\` | 收藏 SQL |
-| POST | \`/api/export\` | 创建导出任务 |
-| GET | \`/api/export\` | 导出任务列表 |
-| GET | \`/api/export/{id}/download\` | 下载导出文件 |
+| POST | `/api/auth/register` | 注册 |
+| POST | `/api/auth/login` | 登录 |
+| POST | `/api/auth/logout` | 登出 |
+| POST | `/api/datasource` | 添加数据源 |
+| GET | `/api/datasource` | 数据源列表 |
+| GET | `/api/datasource/page` | 数据源分页 |
+| POST | `/api/datasource/test` | 测试连接 |
+| PUT | `/api/datasource/{id}/status` | 启用 / 禁用数据源 |
+| POST | `/api/query/execute` | 执行 SQL |
+| GET | `/api/history` | 查询历史 |
+| GET | `/api/history/page` | 历史分页 / 筛选 |
+| POST | `/api/favorite` | 收藏 SQL |
+| POST | `/api/export` | 创建导出任务 |
+| GET | `/api/export` | 导出任务列表 |
+| GET | `/api/export/{id}/download` | 下载导出文件 |
 
 > 除注册、登录、登出外，所有接口需要在请求头携带：
-> \`Authorization: Bearer <token>\`
+> `Authorization: Bearer <token>`
 
 ---
 
-## 已知限制与后续改进
+## 已知限制
 
-**主动列出来，比等着被问强。**
+1. **SQL 审核的关键字层是字符串匹配**：`checkDangerousSql` 对原始 SQL 做 `contains` 判断，
+   可以用注释拆分绕过（如 `INTO/**/OUTFILE`），更稳的做法是基于 AST 判断。
+2. **多实例部署时缓存失效不彻底**：数据源变更只清理当前实例的缓存与连接池，
+   需要 Redis 发布订阅来广播失效事件。
+3. **无监控与指标**：慢查询、连接池水位、限流触发次数均不可观测。
+4. **AES 密钥走环境变量**：生产应接入密钥管理服务并支持轮换。
 
-1. **SQL 审核的关键字层是字符串匹配**：\`checkDangerousSql\` 对原始 SQL 做 \`contains\` 判断，
-   理论上可以用注释或空白拆分绕过（如 \`INTO/**/OUTFILE\`）。更稳的做法是基于 AST 判断，或交给数据库侧的只读权限兜底。
-2. **只读账号建了，但应用层没有强制使用**：\`sql/schema.sql\` 里已经创建了 \`query_user\` 并**只授予 \`SELECT\`**，
-   但平台的多数据源是"用户自己填连接信息"，**用户填什么账号就用什么账号** —— 应用层无法替业务库决定权限。
-   真正的兜底要靠**使用方**在配置数据源时用只读账号；平台侧能做的是在文档里明确要求，并在连接测试时校验账号权限。
-3. **多实例部署时缓存失效不彻底**：数据源变更时由**当前实例**清理 Redis 缓存与本地连接池，
-   其他实例的连接池不会同步失效。需要引入 Redis 发布订阅广播失效事件。
-4. **AES 密钥仍走环境变量**：生产应接入 KMS 并支持密钥轮换；存量 ECB 密文需要一个重加密任务迁移到 GCM。
-5. **无监控与指标**：没有接入 Micrometer / Prometheus，慢查询、连接池水位、限流触发次数都不可观测。
-6. **测试覆盖集中在工具层**：\`SqlValidateUtil\`、\`AesUtil\`、\`JdbcUrlUtil\` 有单元测试，
-   服务层（\`QueryServiceImpl\` / \`ExportServiceImpl\` / \`DbSourceServiceImpl\`）的逻辑主要靠集成测试与人工验证。
+## 安全说明
 
-## 说明
-
-- 当前项目为学习用途，用于演示 Java 后端核心能力
 - 数据库密码、JWT 密钥、AES 密钥均通过环境变量注入，不写入配置文件
-- 查询平台建议使用只读账号连接业务库，配合应用层 SQL 白名单做多层防御
+- `sql/schema.sql` 中创建的 `query_user` 只授予 `SELECT`，建议用它连接业务库，
+  与应用层 SQL 白名单形成多层防御
+- ⚠️ `docker-compose.yml` 中的凭据仅供本地演示，部署前必须替换
