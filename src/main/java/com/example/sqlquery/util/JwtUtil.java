@@ -3,8 +3,6 @@ package com.example.sqlquery.util;
 import com.auth0.jwt.JWT;
 import com.auth0.jwt.algorithms.Algorithm;
 import com.auth0.jwt.interfaces.DecodedJWT;
-import com.example.sqlquery.exception.BusinessException;
-import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -32,7 +30,11 @@ public class JwtUtil {
     }
 
     /**
-     * 验证 Token，解析成功返回 DecodedJWT
+     * 验签并解析 Token，成功返回 {@link DecodedJWT}。
+     *
+     * <p><b>一次请求只应该调用这里一次。</b> 验签内部已经做了 Base64URL 解码，
+     * 返回对象里包含全部 claim —— 后续取值请用下面的 {@link #getUserId(DecodedJWT)} /
+     * {@link #getRole(DecodedJWT)}，不要再传 token 字符串进来重新验一遍。
      */
     public DecodedJWT verifyToken(String token) {
         return JWT.require(Algorithm.HMAC256(secret))
@@ -41,29 +43,21 @@ public class JwtUtil {
     }
 
     /**
-     * 从 Token 中获取 userId
+     * 从<b>已验签</b>的 Token 中取 userId。
+     *
+     * <p>⚠️ 这个方法本身<b>不做验签</b>，入参必须是 {@link #verifyToken(String)} 的返回值。
+     * 之所以不再接收 token 字符串，就是为了从签名上杜绝「传个字符串进来又验一次」的误用。
      */
-    public Long getUserId(String token) {
-        return verifyToken(token).getClaim("userId").asLong();
+    public Long getUserId(DecodedJWT jwt) {
+        return jwt.getClaim("userId").asLong();
     }
 
     /**
-     * 从 Token 中获取 username
+     * 从<b>已验签</b>的 Token 中取 role。
+     *
+     * <p>⚠️ 同 {@link #getUserId(DecodedJWT)}，本方法不做验签。
      */
-    public String getUsername(String token) {
-        return verifyToken(token).getClaim("username").asString();
-    }
-
-    public String getRole(String token) {
-        return verifyToken(token).getClaim("role").asString();
-    }
-
-    public Long getUserIdFromRequest(HttpServletRequest request){
-        String authHeader = request.getHeader("Authorization");
-        if(authHeader == null || !authHeader.startsWith("Bearer ") || authHeader.length() <= 7){
-            throw new BusinessException("未登录");
-        }
-        String token = authHeader.substring(7);
-        return getUserId(token);
+    public String getRole(DecodedJWT jwt) {
+        return jwt.getClaim("role").asString();
     }
 }

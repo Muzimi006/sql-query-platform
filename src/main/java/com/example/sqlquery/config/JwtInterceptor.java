@@ -1,6 +1,7 @@
 package com.example.sqlquery.config;
 
 import com.auth0.jwt.exceptions.JWTVerificationException;
+import com.auth0.jwt.interfaces.DecodedJWT;
 import com.example.sqlquery.service.TokenBlacklistService;
 import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.util.JwtUtil;
@@ -46,9 +47,11 @@ public class JwtInterceptor implements HandlerInterceptor {
                 response.getWriter().write("{\"code\":401,\"message\":\"Token已失效\",\"data\":null}");
                 return false;
             }
-            jwtUtil.verifyToken(token);
-            UserContext.set(jwtUtil.getUserId(token));
-            UserContext.setRole(jwtUtil.getRole(token));
+            // 只验一次签：DecodedJWT 里已经包含全部 claim，
+            // 这里传对象而不是字符串，避免 getUserId / getRole 各自再验一遍
+            DecodedJWT jwt = jwtUtil.verifyToken(token);
+            UserContext.set(jwtUtil.getUserId(jwt));
+            UserContext.setRole(jwtUtil.getRole(jwt));
             return true;
         } catch (JWTVerificationException e) {
             response.setStatus(401);
