@@ -90,9 +90,40 @@ WHERE TABLE_SCHEMA = DATABASE()
   AND TABLE_NAME = 'data_source'
 GROUP BY INDEX_NAME, NON_UNIQUE;
 
--- 再验一次行为（第二次应该报 Duplicate entry）：
---   INSERT INTO data_source (user_id, name, type, host, port, username, password_encrypted)
---   VALUES (1, '迁移验收用', 'MySQL', 'localhost', 3306, 'u', 'v1:x');
---   INSERT INTO data_source (user_id, name, type, host, port, username, password_encrypted)
---   VALUES (1, '迁移验收用', 'MySQL', 'localhost', 3306, 'u', 'v1:x');   -- 预期报唯一键冲突
---   DELETE FROM data_source WHERE name = '迁移验收用';
+-- ---------------------------------------------------------------------------
+-- 第 6 步：行为验收
+--
+-- ⚠️ 下面几条请「逐条单独执行」，不要整段跑 ——
+--    第二条 INSERT 预期就会报错，整段执行会让客户端在报错处中断，
+--    后面的清理语句跑不到，留下测试数据。
+--
+--    预期结果：
+--      第 1 条 INSERT  → 成功
+--      第 2 条 INSERT  → 报 [23000][1062]
+--                        Duplicate entry '1-迁移验收用' for key 'data_source.uk_user_id_name'
+--                        ★ 报错信息里指名的是 uk_user_id_name，
+--                          说明拦住它的是「数据源名称」这条约束，而不是 user.username
+-- ---------------------------------------------------------------------------
+
+-- 6.0 先清理上次可能残留的测试数据
+DELETE FROM data_source WHERE name IN ('迁移验收用', '同名测试');
+
+-- 6.1 第一次插入：成功
+INSERT INTO data_source (user_id, name, type, host, port, username, password_encrypted)
+VALUES (1, '迁移验收用', 'MySQL', 'localhost', 3306, 'u', 'v1:x');
+
+-- 6.2 同一用户再插同名：预期失败（唯一约束生效）
+INSERT INTO data_source (user_id, name, type, host, port, username, password_encrypted)
+VALUES (1, '迁移验收用', 'MySQL', 'localhost', 3306, 'u', 'v1:x');
+
+-- 6.3 换个用户插同名：预期成功（作用域是「用户内唯一」，不是全局唯一）
+INSERT INTO data_source (user_id, name, type, host, port, username, password_encrypted)
+VALUES (2, '同名测试', 'MySQL', 'localhost', 3306, 'u', 'v1:x');
+INSERT INTO data_source (user_id, name, type, host, port, username, password_encrypted)
+VALUES (3, '同名测试', 'MySQL', 'localhost', 3306, 'u', 'v1:x');
+
+-- 6.4 收尾：清掉全部测试数据
+DELETE FROM data_source WHERE name IN ('迁移验收用', '同名测试');
+
+-- 6.5 确认清干净了（应该 0 行）
+SELECT COUNT(*) AS leftover FROM data_source WHERE name IN ('迁移验收用', '同名测试');
