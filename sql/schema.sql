@@ -85,18 +85,16 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 
 -- ============================================================
--- 已经建过库的环境需要手动执行下面的迁移（新建库不用做）
+-- 已经建过库的环境需要执行迁移，见同目录：
+--   migrate_001_data_source_name_unique.sql
+--
+-- 内容：检查重复数据 → 加唯一索引 uk_user_id_name
+--       → 删除被覆盖的冗余索引 idx_user_id → 验收
+--
+-- 该脚本是幂等的（加过就跳过、不存在就跳过），可重复执行。
+-- 不要把 ALTER 语句直接写在这里 —— 新建库上执行会因为
+-- 「索引已存在 / 索引不存在」而报错，让 schema.sql 不再是一次性可跑的脚本。
 -- ============================================================
---
--- 先检查有没有重复数据，有的话必须先清理，否则加唯一索引会直接失败：
---   SELECT user_id, name, COUNT(*) AS c
---   FROM data_source GROUP BY user_id, name HAVING c > 1;
---
--- 加唯一索引（应用层查重挡不住并发，这一步才是真正的兜底）：
---   ALTER TABLE data_source ADD UNIQUE KEY uk_user_id_name (user_id, name);
---
--- 删除被唯一索引覆盖的冗余普通索引：
---   ALTER TABLE data_source DROP INDEX idx_user_id;
 
 CREATE USER IF NOT EXISTS 'query_user'@'%' IDENTIFIED BY 'QueryUser123456';
 
