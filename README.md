@@ -18,7 +18,7 @@ GitHub：https://github.com/Muzimi006/sql-query-platform
 
 | 层 | 手段 | 拦什么 |
 |---|---|---|
-| 解析层 | JSqlParser `parseStatements` + 角色白名单 | 多语句注入（`select 1; drop table x`）、非 SELECT 语句 |
+| 解析层 | JSqlParser `parseStatements` + 语句类型白名单（**默认拒绝**） | 多语句注入（`select 1; drop table x`）、非 SELECT 语句 |
 | 关键字层 | 危险结构匹配 | `INTO OUTFILE` / `INTO DUMPFILE` / `LOAD_FILE` / `SLEEP` / `BENCHMARK`、系统库访问 |
 | 资源层 | `setMaxRows(1000 + 1)` + `setQueryTimeout(30s)` | 大结果集打爆内存、慢查询长期占用连接 |
 | 数据库层 | 建议配合只读账号（见「已知限制」） | 应用层被绕过后的兜底 |
@@ -76,7 +76,7 @@ POST /api/query/execute
   ├─ QueryController    滑动窗口限流（Redis + Lua，10 次 / 60 秒）
   │
   ├─ QueryServiceImpl   ├─ 校验数据源归属
-  │                     ├─ SqlValidateUtil 解析 + 角色白名单 + 危险结构匹配
+  │                     ├─ SqlValidateUtil 解析 + 语句类型白名单 + 危险结构匹配
   │                     ├─ ConnectionManager 取该数据源的 HikariCP 连接
   │                     ├─ setMaxRows(1001) / setQueryTimeout(30)
   │                     └─ 执行 → 超过 1000 行截断并置 truncated
@@ -234,6 +234,9 @@ docker compose up -d
    需要 Redis 发布订阅来广播失效事件。
 3. **无监控与指标**：慢查询、连接池水位、限流触发次数均不可观测。
 4. **AES 密钥走环境变量**：生产应接入密钥管理服务并支持轮换。
+5. **权限模型尚未按角色区分**：`SqlPermissionConfig` 里 `USER` 与 `ADMIN` 配的是同一套权限
+   （都只允许 `SELECT`），且注册时角色固定为 `USER`，没有创建管理员账号的路径。
+   白名单本身是生效的（`validate` 按语句类型默认拒绝），**未落地的是「按角色区分」这一层**。
 
 ## 安全说明
 

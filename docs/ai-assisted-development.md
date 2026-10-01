@@ -56,6 +56,8 @@
 | 并发插入重名数据源绕过应用层查重 | `DbSourceNameUniqueTest` |
 | JDBC 连接串缺少建连超时 | `JdbcUrlUtilTest` |
 | 状态字段被写入非法值 | `DbSourceStatusValidationTest` |
+| `SqlValidateUtil` 里存在第二个校验入口，绕过危险 SQL 与单语句检查 | 删除该入口；`SqlValidateUtilTest` 对准生产唯一入口 `validate` |
+| 白名单缺失（传 `null`）时被当成"放行" | `SqlValidateUtilTest`：空白名单必须全拒 |
 
 ---
 
