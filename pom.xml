@@ -11,21 +11,8 @@
 	<groupId>com.example</groupId>
 	<artifactId>sql-query-platform</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
-	<name/>
-	<description/>
-	<url/>
-	<licenses>
-		<license/>
-	</licenses>
-	<developers>
-		<developer/>
-	</developers>
-	<scm>
-		<connection/>
-		<developerConnection/>
-		<tag/>
-		<url/>
-	</scm>
+	<name>sql-query-platform</name>
+	<description>基于 Spring Boot 的在线 SQL 查询与审核平台</description>
 	<properties>
 		<java.version>17</java.version>
 	</properties>
@@ -97,20 +84,19 @@
 		<dependency>
 			<groupId>org.aspectj</groupId>
 			<artifactId>aspectjweaver</artifactId>
-			<version>1.9.25.1</version>
 		</dependency>
 		<dependency>
 			<groupId>com.fasterxml.jackson.core</groupId>
 			<artifactId>jackson-databind</artifactId>
-			<version>2.22.2</version>
 		</dependency>
 		<!-- jackson-databind 本身不含 java.time 支持，缺了它 LocalDateTime 无法序列化 -->
 		<dependency>
 			<groupId>com.fasterxml.jackson.datatype</groupId>
 			<artifactId>jackson-datatype-jsr310</artifactId>
-			<version>2.21.4</version>
 		</dependency>
 
+		<!-- 显式覆盖 Spring Boot 4.1.0 管理的 amqp-client 版本（Boot 管理的是 5.30.0）。
+		     注意：覆盖受管版本一定要写原因，否则下次升级 Boot 时没人知道这里为什么不一样。 -->
 		<dependency>
 			<groupId>com.rabbitmq</groupId>
 			<artifactId>amqp-client</artifactId>
