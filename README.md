@@ -19,12 +19,34 @@
 | 层 | 手段 | 拦截对象 |
 |---|---|---|
 | 解析层 | JSqlParser `parseStatements` + 语句类型白名单（**默认拒绝**） | 多语句注入（`select 1; drop table x`）、非 SELECT 语句 |
-| 关键字层 | 危险结构匹配 | `INTO OUTFILE` / `INTO DUMPFILE` / `LOAD_FILE` / `SLEEP` / `BENCHMARK`、系统库访问 |
+| 语义层 | **基于 AST** 检查危险函数与系统库（按方言取名单） | `sleep` / `load_file` / `pg_sleep` / `pg_read_file` 等；`mysql` / `information_schema` / `pg_catalog` 等 |
+| 字符串兜底层 | 可执行注释、`INTO OUTFILE`（先屏蔽字符串字面量） | 解析器看不见的东西 —— 见下 |
 | 资源层 | `setMaxRows(1000 + 1)` + `setQueryTimeout(30s)` | 大结果集占用过多内存、慢查询长期占用连接 |
-| 数据库层 | 建议配合只读账号（见「已知限制」） | 应用层被绕过后的兜底 |
+| 数据库层 | 建议配合只读账号 | 应用层被绕过后的兜底 |
 
-> 查询链路与导出链路共用同一套校验入口（`SqlValidateUtil` + `SqlPermissionConfig`）。
-> 早期版本中导出链路缺少这一步校验。同一个数据源、同一个连接池，两条入口的安全级别应当保持一致，该问题已修复。
+> 查询链路与导出链路共用同一个校验入口（`SqlValidateUtil`）。
+> 导出**刻意比查询更严**：固定只允许 `SELECT`，不跟随角色白名单 ——
+> 导出的语义是"把查询结果写成文件"，一条 `UPDATE` 也"执行成功"却没有可写进 CSV 的结果集。
+
+#### 为什么是 AST + 两个字符串兜底，而不是纯 AST
+
+早期版本的关键字层是对原始 SQL 做 `contains`。它两个方向都有问题，且都在真实 MySQL 上复现过：
+
+| SQL | 旧实现 | 原因 |
+|---|---|---|
+| `select sleep/**&#47;(1)` | 🔴 放行 | 实测执行了 1057ms —— 注释把 `sleep(` 拆开了 |
+| `select SLeeP (1)` | 🔴 放行 | 函数名与括号之间有空格 |
+| `select count(*) from \`mysql\`.\`user\`` | 🔴 放行 | 检查的是 `"mysql."`，反引号把点隔开了 |
+| `select 'sleep(1)' as note` | 🔴 **误杀** | 字符串字面量里出现这几个字符就被拒 |
+
+改成 AST 后判断依据变成"这里是不是一次函数调用 / 一张表"，上述四条全部正确处理。
+
+**但纯 AST 不够**：MySQL 的**可执行注释** `/*! ... */` 里的内容会被数据库真正执行
+（实测 `select /*!50000 sleep(1)*/ as x` 耗时 1096ms），而 JSqlParser 把它当普通注释**整个丢掉** ——
+AST 里只剩一个干净的 `SELECT 1`。所以这一类只能回到原始字符串判断，
+并配一个"先屏蔽字符串字面量"的扫描器避免误杀。
+
+**边界要说清楚**：这套检查挡的是"手滑和顺手"，不是"铁了心的攻击者"。真正的兜底是数据库侧的只读账号。
 
 ### 2. 动态多数据源连接池
 
@@ -33,14 +55,35 @@
 - 每个数据源对应一个独立的 HikariCP 连接池，缓存在 `ConcurrentHashMap` 中
 - 数据源**修改 / 删除 / 禁用**时同步 `evict` 并关闭旧连接池。若不做 evict，连接信息变更后仍会继续复用旧连接池，且已被移除的数据源所对应的连接池无法释放
 - 连接信息从 Redis 缓存读取，缓存未命中时回源数据库
+- 驱动类名由方言显式指定，**不靠 Hikari 从 URL 推断** —— 支持多种数据库后 classpath 上会同时存在多个驱动，推断一旦猜错，报错是"driver not found"这类看不出根因的信息
+- 连接池水位通过 Micrometer 暴露（`datasource.pool.connections.*`），并在驱逐时显式注销指标
+
+#### 多实例部署：为什么需要广播，以及广播的到底是什么
+
+一个容易搞错的点：**数据源缓存不在进程里，它就在 Redis 里**。
+所以 `delete` 键这一步本来就是全局生效的，其它实例下次读就是 miss。
+
+真正只存在于单个 JVM、别的实例看不见的是**连接池**。
+实例 A 改了数据源密码之后，实例 B 手里那把池子**还在按旧密码连**，
+表现为请求随机落到"能用"和"不能用"两种实例上 —— 是最难排查的那类故障。
+
+因此数据源变更时会通过 Redis 发布订阅广播（`datasource:cache:invalidate`），
+每个实例收到后清掉**自己的**连接池。
 
 ### 3. 缓存一致性与失效场景
 
 数据源元数据缓存 30 分钟，并针对三种典型失效场景分别处理：
 
 - **穿透**：查询不存在的记录时缓存空值（`"NULL"`，5 分钟 TTL），避免请求持续落到数据库
-- **击穿**：热点 key 过期时使用 **Redis 分布式锁**（唯一 token + Lua 脚本释放），保证只有一个线程回源
-- **雪崩**：TTL 附加随机值（+0~300 秒），避免大量 key 同时过期；Redis 异常时降级为直接查询数据库
+- **击穿**：两层锁。**JVM 内分段锁**（64 段）保证同一 key 在本进程内只有一个回源者；
+  跨实例再由 **Redis 分布式锁**（唯一 token + Lua 脚本释放）兜底，
+  没抢到锁的走**有界轮询等待**（每 20ms 读一次缓存，最多 500ms），等不到才自己回源并打 WARN
+- **雪崩**：TTL 附加随机值（+0~300 秒），避免大量 key 同时过期
+
+> **击穿那一层是"根除"而不是"降低概率"。**
+> 早期实现是"抢不到锁就 `sleep(50)` 再读一次缓存，还没命中就直接查库" ——
+> 等待者最终仍然会查库，QPS 一高照样打穿，而且 50 毫秒是拍脑袋定的。
+> 现在用 32 个线程 + `CountDownLatch` 卡在同一时刻放出去，断言**数据库只被回源 1 次**。
 
 数据源变更时，**缓存与连接池同时失效**。
 
@@ -54,14 +97,81 @@
 ### 5. 密码与凭据
 
 - **用户密码**：BCrypt 哈希。仅引入 `spring-security-crypto`，不引入完整的 Spring Security 自动配置，避免为一个哈希函数引入整套过滤器链
-- **数据源密码**：**AES/GCM/NoPadding**，每次生成随机 12 字节 IV，密文格式为 `v1:` + Base64(IV ‖ 密文 + 认证标签)
+- **数据源密码**：**AES/GCM/NoPadding**，每次生成随机 12 字节 IV，密文格式为 `{密钥版本}:` + Base64(IV ‖ 密文 + 认证标签)
   - 相较 ECB：GCM 为认证加密，自带完整性校验；随机 IV 保证**相同明文不会产生相同密文**
   - 保留只读的 ECB 解密分支，用于存量数据迁移
   - 密钥长度在启动阶段校验（16 / 24 / 32 字节），配置错误时立即失败，而非在运行期抛出难以定位的异常
 
+#### 密钥版本化：让"换密钥"成为可能
+
+密文前缀里的不再是固定的 `v1`，而是**密钥版本号**：
+
+```
+加密：永远用 aes.current-key-version 对应的密钥，并把版本号写进前缀
+解密：按密文里带的版本号选密钥
+```
+
+一把"换不了的密钥"实际上等于"永远用同一把密钥"——密钥一旦泄露也换不了，
+只能让用户把每个数据源密码重新填一遍。版本化之后轮换分三步，每步都可以停下来：
+
+```yaml
+# ① 加新密钥、切当前版本（老数据仍然解得开）
+aes:
+  current-key-version: v2
+  key: <新密钥>
+  keys:
+    v1: <老密钥>
+
+# ② 把存量数据重新加密到 v2：启动一次，幂等，跑完改回 false
+aes:
+  reencrypt-on-startup: true
+
+# ③ 确认没有 v1 残留后，删掉 keys.v1
+```
+
+只配 `aes.key` 时行为与改造前完全一致（现有部署不需要改配置）。
+
+> ⚠️ **残留边界**：密钥仍以明文形式存在于环境变量中，
+> 没有解决"进程被攻破就能拿到密钥"。真正的密钥管理要把加解密变成一次远程调用
+> （KMS / Vault 之类），密钥永远不落到业务进程。
+
 ### 6. 异步导出
 
 导出任务通过 RabbitMQ 异步执行：接口仅写入一条 `PENDING` 记录即返回，消费者执行后推进状态机 `PENDING → RUNNING → SUCCESS / FAILED`，失败原因落库可查。CSV 输出对引号、逗号与换行做了转义处理。
+
+三个容易被忽略、但缺了就会出事的点：
+
+- **幂等**：MQ 只承诺"至少一次"，同一个 taskId 被消费两次是**常态**。
+  用一条条件更新去"认领"（`UPDATE ... WHERE status='PENDING'`），影响行数为 0 就跳过。
+  用 SQL 而不是"先查状态再判断"，是因为后者两个消费者可能同时读到 PENDING。
+- **卡单补偿**：导出链路跨了"数据库 → MQ → 消费者"三段，每段失败都会留下一个**不会自己变**的状态。
+  定时任务同时扫 `PENDING`（消息没投出去）与 `RUNNING`（结果没写回去），
+  超时就标记为失败 —— 否则前端就是一个永远转圈的进度条。
+- **可靠投递**：publisher-confirm + 死信队列 + 手动 ACK，三件缺一不可。
+  只做 Broker 持久化时，处理不掉的消息会被**直接丢弃且没有任何痕迹**。
+
+> 另有一层：导出文件有保留期，过期由定时任务删除并把数据库里的路径置空，
+> 接口只下发"能不能下载"而不下发服务器路径。
+
+### 7. 多方言支持（MySQL / PostgreSQL）
+
+方言相关的知识全部收在一个枚举 `SqlDialect` 里，每个方言必须补齐六件事：
+**连接串前缀、驱动类名、默认端口、危险函数名单、系统库名单、专有语法开关。**
+少任何一个都是一处静默错误 —— 所以"加一个新数据库"现在是一件可以照着做、不容易漏的事。
+
+三个真正体现"方言差异"的点：
+
+| 差异 | 说明 |
+|---|---|
+| **危险函数与系统库完全是两套名字** | MySQL 是 `sleep` / `load_file`；PostgreSQL 是 `pg_sleep` / `pg_read_file`。拿一份名单去检查另一种数据库的 SQL，表现是"检查通过了但什么都没检查" |
+| **`connectTimeout` 参数名相同、单位不同** | MySQL 是**毫秒**，PostgreSQL 是**秒**。把 5000 毫秒直接塞给 PG，等于设了一个 5000 秒的超时 —— 也就是没设 |
+| **PG 的 `pg_catalog` 默认在 `search_path` 里** | `select * from pg_shadow` **不带库名前缀也能访问**。只检查"库名前缀"的实现在 PG 上会整个漏掉这一类，所以方言里额外有一个"裸表名"名单 |
+
+`SqlValidateUtil.validate` **强制要求传方言，不提供省略的重载** ——
+多一个"忘了传"的口子，就等于多一条"看起来在检查、其实没检查"的路径。
+
+前端的数据库类型下拉框读 `GET /api/datasource/dialects` 生成，不维护第二份类型清单；
+切换类型时自动带出默认端口（3306 / 5432）。
 
 ---
 
@@ -74,13 +184,15 @@ POST /api/query/execute
   │
   ├─ JwtInterceptor     校验 Bearer Token → 查 Redis 黑名单 → 写入 UserContext(ThreadLocal)
   │
-  ├─ QueryController    滑动窗口限流（Redis + Lua，10 次 / 60 秒）
+  ├─ QueryController    滑动窗口限流（Redis + Lua，可配，默认 60 次 / 60 秒）
   │
   ├─ QueryServiceImpl   ├─ 校验数据源归属与启用状态
-  │                     ├─ SqlValidateUtil 解析 + 语句类型白名单 + 危险结构匹配
-  │                     ├─ ConnectionManager 取该数据源的 HikariCP 连接
+  │                     ├─ 按角色取语句类型白名单（SqlPermissionService）
+  │                     ├─ SqlValidateUtil 解析 + 类型白名单 + AST 危险检查（按数据源方言）+ 字符串兜底
+  │                     ├─ ConnectionManager 按方言取该数据源的 HikariCP 连接
   │                     ├─ setMaxRows(1001) / setQueryTimeout(30)
-  │                     └─ 执行 → 超过 1000 行截断并置 truncated
+  │                     └─ statement.execute() → 有结果集则截断到 1000 行并置 truncated，
+  │                        没有结果集则返回 affectedRows（写语句走这条分支）
   │
   ├─ QueryHistoryService 记录历史（成功 / 失败、耗时、错误信息）
   │
@@ -90,7 +202,7 @@ POST /api/query/execute
 ### 导出任务
 
 ```text
-POST /api/export  →  校验数据源归属 + SQL 审核（与查询链路同一套）
+POST /api/export  →  校验数据源归属 + SQL 审核（同一入口，但固定只允许 SELECT）
                   →  落库 ExportTask(PENDING)
                   →  RabbitMQ 投递 taskId
                   →  ExportConsumer 消费 → RUNNING → 执行 SQL → 写 CSV
@@ -106,12 +218,15 @@ GET /api/export/{id}/download  →  校验归属 + 任务状态 → 流式写回
 - 用户注册 / 登录 / 登出（JWT + Redis 黑名单）
 - 密码加密（BCrypt）
 - 数据源管理：添加、修改、删除、分页、启用 / 禁用
+- **多方言支持：MySQL / PostgreSQL**，连接串、驱动、危险函数与系统库检查均按方言区分
 - 数据源连接测试（JDBC）
-- SQL 查询工作台：JSqlParser 白名单校验、仅允许单条语句、拦截危险结构
+- SQL 查询工作台：JSqlParser + AST 校验、仅允许单条语句、按角色区分语句类型
 - 查询历史：分页、按状态 / 数据源筛选
 - 收藏常用 SQL
-- 异步导出 CSV（RabbitMQ）
-- Redis：数据源元数据缓存、滑动窗口限流（Lua 原子脚本）、分布式锁
+- 异步导出 CSV（RabbitMQ + 幂等 / 死信 / 卡单补偿）+ **前端导出页面**
+- Redis：数据源元数据缓存、滑动窗口限流（Lua 原子脚本）、分布式锁、失效广播
+- 权限：按角色区分 SQL 类型白名单，管理员通过邀请码注册
+- **可观测性**：Micrometer 指标（慢查询 / 连接池水位 / 缓存命中率 / 限流次数）+ Actuator 健康检查
 - AOP 操作审计日志
 - Docker Compose 一键部署
 
@@ -121,11 +236,13 @@ GET /api/export/{id}/download  →  校验归属 + 任务状态 → 流式写回
 |---|---|
 | 框架 | Spring Boot 4.1.0 · Java 17 |
 | 持久层 | MyBatis-Plus |
-| 存储 | MySQL · Redis |
+| 存储 | MySQL（平台自身）· Redis |
+| **业务数据库方言** | **MySQL · PostgreSQL**（可扩展） |
 | 消息 | RabbitMQ |
-| 认证与加密 | JWT（auth0 java-jwt）· BCrypt · AES/GCM |
-| SQL 解析 | JSqlParser |
+| 认证与加密 | JWT（auth0 java-jwt）· BCrypt · AES/GCM（密钥版本化） |
+| SQL 解析 | JSqlParser 4.9 |
 | 连接池 | HikariCP |
+| 可观测性 | Spring Boot Actuator · Micrometer · Prometheus |
 | 切面 | Spring AOP |
 | 部署 | Docker Compose |
 | 测试与 CI | JUnit 5 · Mockito · GitHub Actions |
@@ -134,13 +251,16 @@ GET /api/export/{id}/download  →  校验归属 + 任务状态 → 流式写回
 
 ```text
 src/main/java/com/example/sqlquery
-├── common       // 统一返回、ThreadLocal 用户上下文、常量
-├── config       // 配置类、拦截器、AOP、SQL 权限、MQ 消费者
+├── cache        // 数据源失效广播（发布 / 订阅 / 订阅容器的启动与重试）
+├── common       // 统一返回、ThreadLocal 用户上下文、状态与角色常量
+├── config       // 配置类、拦截器、AOP、配置属性、MQ 消费者、定时任务
 ├── controller   // 接口层
+├── dialect      // 方言定义（连接串 / 驱动 / 危险函数 / 系统库 / 专有语法）
 ├── dto          // 请求参数
 ├── entity       // 数据库实体
 ├── exception    // 异常处理
 ├── mapper       // 数据访问层
+├── metrics      // 指标定义（集中一处 —— 指标名是对外契约）
 ├── service      // 业务层
 ├── util         // JWT、AES、JDBC URL、连接池、限流、SQL 校验
 └── vo           // 返回对象
@@ -154,9 +274,10 @@ src/main/java/com/example/sqlquery
 
 - JDK 17
 - Maven 3.9+
-- MySQL 8+
+- MySQL 8+（平台自身的库）
 - Redis 7+
-- RabbitMQ 3.x（可选，使用导出功能时需要）
+- RabbitMQ 3.x（使用导出功能时需要）
+- PostgreSQL 16+（可选，只在验证多方言时需要）
 
 ### 配置环境变量
 
@@ -165,13 +286,26 @@ DB_USERNAME=root
 DB_PASSWORD=你的数据库密码
 JWT_SECRET=你的JWT密钥
 AES_KEY=你的AES密钥（16/24/32字符）
+AES_KEY_VERSION=v1                      # 可选，默认 v1
+ADMIN_REGISTER_CODE=                    # 可选；留空 = 关闭自助创建管理员
 RABBITMQ_HOST=localhost
 REDIS_HOST=localhost
 ```
 
+> `ADMIN_REGISTER_CODE` 是一个凭据：注册时带上它才能拿到 `ADMIN` 角色。
+> **留空（默认）表示关闭自助创建管理员** —— 忘记配置的后果是"暂时建不出管理员"，
+> 而不是"任何人都能把自己变成管理员"。
+
 ### 初始化数据库
 
 执行 `sql/schema.sql` 中的建库建表语句。
+
+从旧版本升级时，还需要执行迁移脚本（都是幂等的，可重复执行）：
+
+| 脚本 | 作用 |
+|---|---|
+| `sql/migrate_001_data_source_name_unique.sql` | 检查重复数据 → 加唯一索引 `uk_user_id_name` |
+| `sql/migrate_002_backfill_timestamps.sql` | 回填被写成 NULL 的 `created_at` / `updated_at` |
 
 ### 启动
 
@@ -180,12 +314,15 @@ REDIS_HOST=localhost
 ```
 
 默认地址：`http://localhost:8080`
+监控端点：`http://127.0.0.1:8081/actuator/health`（**只监听本机**）
 
 ### Docker 启动
 
 ```bash
-docker compose up -d
+docker compose up -d redis rabbitmq postgres
 ```
+
+> MySQL 建议用本机的（compose 里的 mysql 会占用 3306）。
 
 ---
 
@@ -195,12 +332,24 @@ docker compose up -d
 
 | 层 | 命令 | 依赖 |
 |---|---|---|
-| 单元测试 | `mvn test` | 无（AES、JDBC URL、SQL 校验、分页校验、密码链路等纯逻辑） |
-| 集成测试 | `docker compose up -d && mvn test -Dgroups=integration` | MySQL / Redis / RabbitMQ |
+| 单元测试 | `mvn test` | 无（AES、JDBC URL、SQL 校验、方言、分页、密码链路等纯逻辑） |
+| 集成测试 | `mvn test -Dgroups=integration -Dsurefire.excludedGroups=` | MySQL / Redis / RabbitMQ；PostgreSQL 用例另需 `docker compose up -d postgres` |
 
-需要中间件的用例标注了 `@Tag("integration")`，由 surefire 默认排除；CI（GitHub Actions）执行的是无外部依赖的单元测试层。
+需要中间件的用例标注了 `@Tag("integration")`，由 surefire 默认排除。
 
-当前共 **12 个测试类、47 个用例**，覆盖范围包括：AES 加解密与密钥长度校验、JDBC URL 超时参数、SQL 校验（多语句 / 危险结构 / 系统库 / 空名单）、分页参数上限、JWT 单次请求验签次数、CSV 导出编码、导出文件清理、数据源入口与状态校验、并发重名、缓存序列化，以及注册 / 登录 / 改密码链路。
+> ⚠️ **必须带上 `-Dsurefire.excludedGroups=`**。
+> 排除项原本是硬编码在插件配置里的，而 POM 里显式配置的插件参数优先级高于命令行 `-D` 属性 ——
+> 只写 `-Dgroups=integration` 的话，一条集成用例都不会跑，却会显示 BUILD SUCCESS。
+> 现在排除项已改成属性（`surefire.excludedGroups`），所以清空它就能放行。
+
+当前共 **175 个用例**。集成用例（打 `integration` 标签）覆盖：MyBatis-Plus 装配与分页、
+导出的幂等与卡单补偿、**真实 PostgreSQL 下的双方言行为**、写语句执行与角色权限。
+
+单元测试覆盖的失败模式：AES 加解密与**密钥轮换**、JDBC URL 的方言差异与超时参数、
+SQL 校验（多语句 / 危险函数 / 系统库 / 可执行注释 / 空名单 / 按方言取名单）、
+缓存击穿（32 线程并发只回源 1 次）、JWT 单次请求验签次数与剩余有效期换算、
+CSV 导出编码、导出文件清理、数据源入口与状态校验、并发重名、缓存序列化、
+全局异常语义、指标定义、角色权限矩阵、注册 / 登录 / 改密码链路。
 
 ---
 
@@ -212,6 +361,7 @@ docker compose up -d
 | POST | `/api/auth/login` | 登录 |
 | POST | `/api/auth/logout` | 登出 |
 | POST | `/api/datasource` | 添加数据源 |
+| GET | `/api/datasource/dialects` | 支持的数据库类型（前端下拉框的数据来源） |
 | GET | `/api/datasource` | 数据源列表 |
 | GET | `/api/datasource/page` | 数据源分页 |
 | POST | `/api/datasource/test` | 测试连接 |
@@ -230,14 +380,42 @@ docker compose up -d
 
 ## 已知限制
 
-1. **SQL 审核的关键字层基于字符串匹配**：`checkDangerousSql` 对原始 SQL 做 `contains` 判断，可以通过注释拆分绕过（如 `INTO/**/OUTFILE`）。更稳妥的做法是基于 AST 判断，最终兜底依赖数据库侧的只读权限。
-2. **多实例部署时缓存失效不彻底**：数据源变更仅清理当前实例的缓存与连接池，其他实例不会收到通知，需要引入 Redis 发布订阅来广播失效事件。
-3. **缺少监控与指标**：慢查询、连接池水位、缓存命中率、限流触发次数均不可观测。
-4. **AES 密钥通过环境变量注入**：仅解决了密钥不进代码库的问题，生产环境应接入密钥管理服务并支持轮换。
-5. **权限模型尚未按角色区分**：`SqlPermissionConfig` 中 `USER` 与 `ADMIN` 配置的是同一套权限（均只允许 `SELECT`），且注册时角色固定为 `USER`，没有创建管理员账号的路径。白名单校验本身是生效的（`validate` 按语句类型默认拒绝），尚未落地的是「按角色区分」这一层。
+> 这一节曾经列着 5 条限制。其中 4 条已经修掉，保留在这里是为了说明**每条当时是怎么想的、现在做到了什么程度** ——
+> 一条限制被划掉的方式，比它存在与否更能说明问题。
+
+| # | 曾经的问题 | 现状 |
+|---|---|---|
+| 1 | SQL 审核的关键字层基于字符串匹配，可被注释拆分绕过 | ✅ **已改为 AST**（+ 两个精确的字符串兜底）。见「核心设计 §1」 |
+| 2 | 多实例部署时缓存失效不彻底 | ✅ **已加 Redis 发布订阅广播**。并更正了原表述：真正需要同步的是**连接池**，缓存本来就在 Redis 里 |
+| 3 | 缺少监控与指标 | ✅ **已接入 Actuator + Micrometer**，四项均可查 |
+| 4 | AES 密钥仅环境变量注入，无轮换 | ⚠️ **部分解决**：已支持密钥版本化与轮换迁移；但密钥仍以明文存在于环境变量中 |
+| 5 | 权限模型未按角色区分 | ✅ **已落地**：角色 → 语句类型矩阵可配，管理员通过邀请码注册 |
+
+**当前仍然存在的边界**（都是有意保留、且写明了理由的）：
+
+1. **密钥的保管方式**：版本化解决了"换不了"，但没解决"进程被攻破就能拿到密钥"。
+   真正的密钥管理要把加解密变成一次远程调用（KMS / Vault 之类），密钥永不落到业务进程。
+2. **应用层校验挡的是"手滑和顺手"，不是"铁了心的攻击者"**。
+   真正的兜底是数据库侧的只读账号 —— 应用层无论被怎么绕过，最终能在数据库上做的事情仍被账号权限限制着。
+3. **CI 不验证"应用能不能启动"**：唯一加载 Spring 上下文的用例打了 `integration` 标签，
+   而 CI 跑的是默认的单元测试层。所以任何**只在启动时才会暴露**的配置错误
+   （占位符解析不了、配置绑定失败）CI 拦不住，只能在人肉启动时发现。
+   补法有三个方向：CI 里用 Testcontainers 起中间件、用内存替身跑一个冒烟测试、
+   或者加一个"只验配置绑定与上下文刷新"的轻量检查。
+4. **限流是进程内实现**：它负责"拦住失控的脚本"，不是"扛住大流量"。
+   真要在大流量下守住，靠的是网关层限流。
+5. **RabbitMQ 的队列参数变更需要人工升级**：给一个**已存在**的队列加参数（比如加死信交换机），
+   Broker 会报 `PRECONDITION_FAILED (406)`。旧环境需要先删掉 `export.queue`，应用启动时会按新参数重新声明。
 
 ## 安全说明
 
 - 数据库密码、JWT 密钥与 AES 密钥均通过环境变量注入，不写入配置文件
+- **管理员邀请码同样只从环境变量注入**，且默认关闭 —— 它是一个凭据，不要写进配置文件或提交进仓库
+- 登出黑名单**存 token 的 SHA-256 哈希**而不是原文：原文入库等于把一把还能用的钥匙抄一份放缓存里，
+  Redis 一旦被读就能直接重放登录态，且不需要 JWT 密钥
+- 监控端点走**独立端口 8081 且只监听 127.0.0.1**，暴露白名单只开 `health,info,metrics,prometheus`；
+  `/actuator/env`、`/beans`、`/heapdump` 之类默认就是关的
+- 健康检查的开关也跟安全取向一致：`liveness` 只看进程本身，`readiness` 只看平台自己的数据库，
+  **刻意不含 Redis** —— 否则负载均衡会因为一个"可以降级"的依赖把实例摘掉，等于把"降级可用"又变回"不可用"
 - `sql/schema.sql` 中创建的 `query_user` 仅授予 `SELECT` 权限，建议使用该账号连接业务库，与应用层 SQL 白名单形成多层防御
 - `docker-compose.yml` 中的凭据仅用于本地演示，部署前必须替换

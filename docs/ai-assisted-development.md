@@ -53,6 +53,22 @@
 | 失败模式 | 守住它的东西 |
 |---|---|
 | 改完没编译就提交 | GitHub Actions：`mvn -B test` |
+| 手工装配 `SqlSessionFactory` 时漏掉分页插件 → 分页静默失效（全表查询、`total` 恒为 0） | `MybatisPlusWiringIntegrationTest`（真实 MySQL：断言 SQL 真的拼了 LIMIT） |
+| 漏掉 `MetaObjectHandler` → `created_at` 被显式写成 NULL，连库表默认值都被顶掉 | `MybatisPlusWiringIntegrationTest`（**直接读数据库列**，而不是读实体） |
+| jsqlparser 版本低于 MyBatis-Plus 声明的版本 → 分页插件实例化时 `InstantiationError` | `pom.xml` 里锁版本 + 注释说明原因（这是**只有真正用到插件时才暴露**的失败，测试拦不住） |
+| 客户端错误掉进兜底分支，被报成「系统异常」 | `GlobalExceptionHandlerTest`（每条断言都要求答案**不是**「系统异常」） |
+| 未知角色兜底成 SELECT、`null` 角色抛 NPE | `SqlPermissionServiceTest`（fail-closed） |
+| `USER` 与 `ADMIN` 配成同一套权限（"按角色区分"是个摆设） | `SqlPermissionServiceTest`（断言两个角色的权限集合**不相等**） |
+| 权限层放行了写语句，但执行层用 `executeQuery` 做不到 | `QueryWriteStatementIntegrationTest`（真实 MySQL：验"数据真的被改了"，不只是接口不报错） |
+| 导出被重复投递时重跑并覆盖文件 | `ExportConsumerIdempotencyTest` + `ExportIdempotencyIntegrationTest`（真实 Broker 重投，断言文件 mtime 不变） |
+| 导出任务卡在 PENDING / RUNNING 没人管 | `ExportTaskRecoveryJobTest` |
+| 拿 MySQL 的危险函数名单去检查 PostgreSQL 的 SQL（"检查了但什么都没检查"） | `SqlDialectTest`（断言两个方言的名单**无交集**）+ `PostgresDialectIntegrationTest`（真实 PG） |
+| PG 的 `pg_catalog` 默认在 search_path 里，裸表名绕过前缀检查 | `PostgresDialectIntegrationTest`（`select * from pg_shadow`） |
+| `connectTimeout` 单位不同（MySQL 毫秒 / PG 秒）导致"设了等于没设" | `JdbcUrlUtilTest` |
+| 数据源类型填成不支持的数据库，却被静默当成 MySQL 处理 | `SqlDialectTest` + `JdbcUrlUtilTest`（必须报错并列出支持的方言） |
+| 换密钥后老数据解不开 | `AesUtilTest`（轮换后老密文仍能解密、重新加密幂等） |
+| 黑名单 TTL 与 token 生命周期脱钩（写死天数） | `JwtUtilRemainingValidityTest`（造一个"用了 6 天"的 token 才测得出来） |
+| 用签名的**最后一个字符**造篡改用例 —— 那一位的低位在 Base64URL 解码时被忽略，用例约 1/16 概率失败 | `JwtInterceptorVerifyCountTest`（改第一个字符 + 一条用例专门锁定这个前提） |
 | 缓存序列化静默失败（时间类型不支持、异常被吞） | `JacksonConfigTest` |
 | 分页参数无上限，一次拉全表 | `PaginationValidationTest` |
 | 同一个 token 在一次请求里被重复验签 | `JwtInterceptorVerifyCountTest` |
@@ -72,3 +88,17 @@
 
 - 本文件描述的是**本仓库当前的协作方式与约定**，不评价任何工具的能力
 - 这些约定是逐步加上去的：每一条背后都对应一次真实故障或一次代码审查
+
+### 用什么衡量"AI 参与开发"这件事做得好不好
+
+不是"用了多少 AI"，而是**人有没有在做判断**。几个本仓库里真实发生过的例子：
+
+| 场景 | 人的判断体现在哪 |
+|---|---|
+| AI 给出的修法按文档照做会让应用起不来 | 先跑一遍、发现 `InstantiationError`，再去反编译 jar 查出版本不兼容 —— **没有把"代码写对了"等同于"能跑"** |
+| AI 说"改成 AST 就安全了" | 又去实测 MySQL 的**可执行注释** `/*! ... */`，发现解析器把它整个丢掉 —— **没有停在第一个看起来正确的答案上** |
+| 一个测试通过了 | 回过头问"**如果我改错了，这个验证会不会失败**" —— 黑名单 TTL 那次就是靠这个问题发现原来的验证什么都没证明 |
+| 一个偶发失败的用例 | 不是重跑一遍让它变绿，而是去查 `Base64URL` 末位字符的填充位 —— 并且发现自己新写的用例踩了同一个坑 |
+| AI 提出的结论与自己看到的不一致 | 用 32 线程并发测试去证伪/证实，而不是挑一个听起来更好的说法写进文档 |
+
+一句话：**AI 负责把可能性铺开，人负责决定哪个是真的、以及怎么证明它是真的。**
