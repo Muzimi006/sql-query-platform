@@ -6,6 +6,7 @@ import com.example.sqlquery.config.SqlPermissionConfig;
 import com.example.sqlquery.util.SqlType;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.exception.BusinessException;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.service.QueryHistoryService;
 import com.example.sqlquery.service.QueryService;
@@ -31,6 +32,7 @@ public class QueryServiceImpl implements QueryService {
     private final DbSourceService dbSourceService;
     private final QueryHistoryService queryHistoryService;
     private final ConnectionManager connectionManager;
+    private final SqlPlatformMetrics metrics;
 
     /** 单次查询最多返回的行数，超出则截断并置 truncated 标记。 */
     private static final int MAX_ROWS = 1000;
@@ -40,10 +42,12 @@ public class QueryServiceImpl implements QueryService {
 
     public QueryServiceImpl(DbSourceService dbSourceService,
                             QueryHistoryService queryHistoryService,
-                            ConnectionManager connectionManager) {
+                            ConnectionManager connectionManager,
+                            SqlPlatformMetrics metrics) {
         this.dbSourceService = dbSourceService;
         this.queryHistoryService = queryHistoryService;
         this.connectionManager = connectionManager;
+        this.metrics = metrics;
     }
 
     @Override
@@ -55,10 +59,19 @@ public class QueryServiceImpl implements QueryService {
         Set<SqlType> allowedTypes = SqlPermissionConfig.getByRole(UserContext.getRole());
         SqlValidateUtil.validate(dto.getSql(), allowedTypes);
 
+        // 计时从"真正要发给数据库"开始。
+        // 注意 SqlValidateUtil.validate 在上面就已经执行过了 —— 被白名单或危险规则
+        // 拦下的请求<b>不会</b>进入这里的统计。这是有意的：那些请求根本没碰数据库，
+        // 混进耗时分位数里只会把真实的慢查询压下去。
         long start = System.currentTimeMillis();
         try {
             QueryVO vo = doExecute(dbSource, dto.getSql());
             long cost = System.currentTimeMillis() - start;
+
+            metrics.recordQuerySuccess(cost);
+            if (Boolean.TRUE.equals(vo.getTruncated())) {
+                metrics.recordQueryTruncated();
+            }
 
             queryHistoryService.saveHistory(userId, dbSource.getId(), dto.getSql(), "SUCCESS", cost, null);
 
@@ -66,6 +79,8 @@ public class QueryServiceImpl implements QueryService {
             return vo;
         } catch (SQLException e) {
             long cost = System.currentTimeMillis() - start;
+
+            metrics.recordQueryFailure(cost);
 
             queryHistoryService.saveHistory(userId, dbSource.getId(), dto.getSql(), "FAILED", cost, e.getMessage());
 
