@@ -118,5 +118,36 @@ jwt:
   secret: ${JWT_SECRET}
   expire-days: 7
 aes:
-      key: ${AES_KEY}
+  # ---- 密钥版本化 ----
+  # 密文格式：{版本号}:{Base64(...)}，例如 v2:xxxx
+  # 加密永远用 current-key-version；解密按密文里带的版本号选密钥。
+  #
+  # 只配 key（不配 keys）时行为与改造前完全一致 —— 现有部署不需要改任何配置。
+  current-key-version: ${AES_KEY_VERSION:v1}
+  key: ${AES_KEY:}
+
+  # 历史密钥：版本号 -> 密钥，只用于解密。
+  # 轮换时把老密钥放这里，新密钥放上面的 key，再把 current-key-version 指到新版本：
+  #   current-key-version: v2
+  #   key: <新密钥>
+  #   keys:
+  #     v1: <老密钥>
+  # 这样新数据用新密钥、老数据仍然解得开，轮换是可以分步做的。
+  #
+  # ⚠️ 不配 keys 时不要写 "keys: {}"。
+  # 空的 flow map 会被 Spring Boot 摊平成「aes.keys="空字符串"」这一个属性，
+  # 再往 Map<String,String> 字段上绑定时会直接报
+  #   ConverterNotFoundException: No converter found capable of converting
+  #   from type [java.lang.String] to type [java.util.Map]
+  # 应用起不来。不写这一项即可 —— Java 字段本身就是空 Map。
+
+  # 历史 ECB 密文（没有版本前缀的那种）用哪个版本的密钥解。
+  # 本项目引入 GCM 时的密钥版本就是 v1，在那之前产生的密文用的也是同一个密钥。
+  legacy-key-version: v1
+
+  # 启动时把存量密码重新加密到当前版本。默认关闭 ——
+  # 它会改写所有数据源密码，属于有破坏性的批量操作，应该由人显式触发。
+  # 幂等：已经是当前版本的记录会被跳过，可以安全地重复执行。
+  # 用法：轮换时临时置为 true 启动一次，确认日志里的迁移条数后改回 false。
+  reencrypt-on-startup: ${AES_REENCRYPT_ON_STARTUP:false}
 
