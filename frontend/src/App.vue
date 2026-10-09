@@ -29,6 +29,7 @@ async function handleLogout() {
     <span class="brand">SQL 查询与审核平台</span>
     <RouterLink to="/query">查询工作台</RouterLink>
     <RouterLink to="/datasource">数据源管理</RouterLink>
+    <RouterLink to="/export">导出任务</RouterLink>
     <span class="spacer"></span>
     <span class="user">{{ user?.nickname || user?.username }}</span>
     <button class="ghost" @click="handleLogout">退出</button>

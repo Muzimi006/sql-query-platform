@@ -11,7 +11,8 @@ const routes = [
     meta: { public: true }
   },
   { path: '/query', name: 'query', component: () => import('./views/QueryView.vue') },
-  { path: '/datasource', name: 'datasource', component: () => import('./views/DataSourceView.vue') }
+  { path: '/datasource', name: 'datasource', component: () => import('./views/DataSourceView.vue') },
+  { path: '/export', name: 'export', component: () => import('./views/ExportView.vue') }
 ]
 
 const router = createRouter({

@@ -7,6 +7,10 @@ const error = ref('')
 const message = ref('')
 const loading = ref(false)
 
+// 支持的数据库类型由后端下发，前端不写死 ——
+// 两边各维护一份清单的话，"后端支持了但下拉框里没有"不会有任何报错
+const dialects = ref([])
+
 // 新增数据源的表单。字段名必须和后端 DbSourceDTO 对齐
 const form = ref({
   name: '',
@@ -17,6 +21,30 @@ const form = ref({
   username: '',
   password: ''
 })
+
+/**
+ * 切换数据库类型时自动带出默认端口。
+ *
+ * <p>不是可有可无的便利：MySQL 是 3306、PostgreSQL 是 5432，
+ * 选完类型还要用户自己去查端口号，最容易出的一类错误就是"类型换了端口没换"，
+ * 而那种错误的表现是连接超时 —— 看不出真正原因。
+ */
+function handleTypeChange() {
+  const picked = dialects.value.find((d) => d.value === form.value.type)
+  if (picked) form.value.port = picked.defaultPort
+}
+
+async function loadDialects() {
+  try {
+    dialects.value = await dataSourceApi.dialects()
+    if (dialects.value.length && !dialects.value.some((d) => d.value === form.value.type)) {
+      form.value.type = dialects.value[0].value
+      handleTypeChange()
+    }
+  } catch (e) {
+    error.value = e.message
+  }
+}
 
 async function load() {
   loading.value = true
@@ -76,7 +104,10 @@ async function handleDelete(row) {
 }
 
 // onMounted：组件挂载完成后执行一次，等价于「页面加载时拉数据」
-onMounted(load)
+onMounted(async () => {
+  await loadDialects()
+  await load()
+})
 </script>
 
 <template>
@@ -86,9 +117,10 @@ onMounted(load)
       <div class="row">
         <label>名称<input v-model="form.name" placeholder="例如：测试库" /></label>
         <label>类型
-          <select v-model="form.type">
-            <option value="MySQL">MySQL</option>
-            <option value="openGauss">openGauss（B 库 / MySQL 协议口）</option>
+          <select v-model="form.type" @change="handleTypeChange">
+            <option v-for="d in dialects" :key="d.value" :value="d.value">
+              {{ d.label }}（默认端口 {{ d.defaultPort }}）
+            </option>
           </select>
         </label>
         <label>主机<input v-model="form.host" /></label>
