@@ -3,6 +3,7 @@ package com.example.sqlquery.config;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.util.ConnectionManager;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -53,6 +54,14 @@ class ExportCsvEncodingTest {
         // 构造参数里已经没有 AesUtil：它原先被注入进来却从头到尾没被用过
         // （数据源密码的解密统一在 ConnectionManager 里做），属于无用依赖，已删除
         ExportConsumer consumer = new ExportConsumer(null, null, connectionManager);
+
+        // 导出链路有行数上限和查询超时（补上来的保护），
+        // 而手工 new 出来的实例没有经过 Spring 注入，这两个字段还是默认值。
+        // ⚠️ 不显式设置的话 maxRows = 0，第一次写行就会抛"超过 0 行上限" ——
+        // 这个失败方向是对的（响亮地报错，而不是静默地写出所有数据），
+        // 但本用例要验的是编码，所以这里给它一份正常的配置。
+        ReflectionTestUtils.setField(consumer, "maxRows", 100);
+        ReflectionTestUtils.setField(consumer, "queryTimeoutSeconds", 30);
 
         File file = File.createTempFile("export-encoding-", ".csv");
         try {

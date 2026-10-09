@@ -4,12 +4,14 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.example.sqlquery.common.ExportStatus;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.entity.ExportTask;
+import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.mapper.ExportTaskMapper;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.util.ConnectionManager;
 import com.rabbitmq.client.Channel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.amqp.support.AmqpHeaders;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.stereotype.Component;
@@ -48,6 +50,12 @@ import java.time.LocalDateTime;
  *
  * <p><b>三、处理不掉的投递要进死信队列。</b>
  * 见 {@link #handle} 里 nack 的说明。
+ *
+ * <p><b>四、导出的 SQL 也必须有超时和行数上限。</b>
+ * 这两样查询链路一直有（{@code setQueryTimeout(30)} + {@code setMaxRows(1001)}），
+ * 但导出链路最初<b>漏了</b> —— 而它用的是<b>同一个连接池</b>（上限 5），
+ * 一条挂住的慢 SQL 或者一次全表扫描，影响的不只是这一个导出任务。
+ * 见 {@link #generateCsv}。
  */
 @Slf4j
 @Component
@@ -55,6 +63,29 @@ public class ExportConsumer {
 
     /** UTF-8 BOM，写在 CSV 文件最开头，让 Excel 正确识别编码。 */
     private static final char UTF8_BOM = '\uFEFF';
+
+    /**
+     * 单次导出最多写多少行。
+     *
+     * <p>比查询链路的 {@code MAX_ROWS}（1000）宽得多 —— 导出本来就是为了拿大批数据。
+     * 但<b>不能没有上限</b>：一条 {@code select * from 大表} 会把磁盘写满，
+     * 而磁盘写满影响的是<b>整台机器上的所有服务</b>，不只是这一个导出。
+     */
+    @Value("${export.max-rows:100000}")
+    private int maxRows;
+
+    /**
+     * 单条导出 SQL 的执行超时（秒）。
+     *
+     * <p>比查询链路的 30 秒宽，因为导出还要往磁盘写。
+     * 但<b>必须有</b>：导出连接来自<b>同一个连接池</b>（上限 5），
+     * 一条挂住的慢 SQL 会把池子慢慢占满，而池子是所有查询和导出共用的。
+     *
+     * <p>⚠️ 这个值必须<b>明显小于</b> {@code export.stuck-running-minutes}
+     * （卡单补偿的阈值），否则补偿任务会把一个仍在正常执行的导出判成卡死。
+     */
+    @Value("${export.query-timeout-seconds:300}")
+    private int queryTimeoutSeconds;
 
     private final ExportTaskMapper exportTaskMapper;
     private final DbSourceService dbSourceService;
@@ -178,47 +209,74 @@ public class ExportConsumer {
      *
      * <p>包级可见（而非 private）是为了让单元测试能直接调用它。
      *
-     * <p>两个必须显式处理的点：
-     * <ul>
+     * <p><b>必须显式处理的四件事</b>：
+     * <ol>
      *   <li><b>必须显式指定 UTF-8</b>：{@code FileWriter} 用的是平台默认字符集 ——
      *       Windows 上是 GBK、Linux 上是 UTF-8，同一份代码在不同平台产出的文件不一样，
      *       而且本机测不出来；</li>
      *   <li><b>必须在开头写 UTF-8 BOM</b>：Excel 不会自动识别「没有 BOM 的 UTF-8」，
      *       不写 BOM 时中文照样乱码。BOM 只在文件最开头写一次。</li>
-     * </ul>
+     *   <li><b>必须有查询超时</b>：见 {@link #queryTimeoutSeconds}；</li>
+     *   <li><b>必须有行数上限</b>：见 {@link #maxRows}。</li>
+     * </ol>
+     *
+     * <p>⚠️ 后两条是<b>补上来的</b>。查询链路从一开始就有超时和行数上限，
+     * 导出链路最初两个都没有 —— 而它用的是同一个连接池。
+     * <b>"另一条链路已经做了"不等于"这条链路也做了"</b>，
+     * 这是本项目里反复出现的一类疏漏（导出曾经也漏过 SQL 审核）。
      */
     long generateCsv(DbSource dbSource, String sql, File file) throws Exception {
         long rowCount = 0;
 
         try (Connection connection = connectionManager.getConnection(dbSource);
-             Statement statement = connection.createStatement();
-             ResultSet resultSet = statement.executeQuery(sql);
-             OutputStreamWriter writer = new OutputStreamWriter(
-                     new FileOutputStream(file), StandardCharsets.UTF_8)) {
+             // ⚠️ Statement 单独一层 try：必须在 executeQuery <b>之前</b>把它配置好。
+             // 写成一个 try-with-resources 里连着 executeQuery 的话，
+             // setQueryTimeout / setMaxRows 根本没有位置放。
+             Statement statement = connection.createStatement()) {
 
-            writer.write(UTF8_BOM);
+            statement.setQueryTimeout(queryTimeoutSeconds);
+            // 多读一行，用来判断"是不是超了" —— 和查询链路判断截断是同一个技巧
+            statement.setMaxRows(maxRows + 1);
 
-            ResultSetMetaData metaData = resultSet.getMetaData();
-            int columnCount = metaData.getColumnCount();
+            try (ResultSet resultSet = statement.executeQuery(sql);
+                 OutputStreamWriter writer = new OutputStreamWriter(
+                         new FileOutputStream(file), StandardCharsets.UTF_8)) {
 
-            for (int i = 1; i <= columnCount; i++) {
-                if (i > 1) {
-                    writer.write(",");
-                }
-                writer.write(csvEscape(metaData.getColumnLabel(i)));
-            }
-            writer.write("\n");
+                writer.write(UTF8_BOM);
 
-            while (resultSet.next()) {
+                ResultSetMetaData metaData = resultSet.getMetaData();
+                int columnCount = metaData.getColumnCount();
+
                 for (int i = 1; i <= columnCount; i++) {
                     if (i > 1) {
                         writer.write(",");
                     }
-                    Object value = resultSet.getObject(i);
-                    writer.write(csvEscape(value == null ? "" : value.toString()));
+                    writer.write(csvEscape(metaData.getColumnLabel(i)));
                 }
                 writer.write("\n");
-                rowCount++;
+
+                while (resultSet.next()) {
+                    rowCount++;
+                    if (rowCount > maxRows) {
+                        // ⚠️ 超限让<b>整个任务失败</b>，而不是截断后返回成功。
+                        //
+                        // 截断的 CSV 看起来是"完整的" —— 用户会以为数据齐了、拿去用；
+                        // 而报错至少让他知道要缩小范围。
+                        // **静默的假数据比一句报错危险得多**，这一点和查询链路不同
+                        // （查询链路会截断并带 truncated 标记，因为结果就在屏幕上、看得见少不少）。
+                        throw new BusinessException("导出结果超过 " + maxRows
+                                + " 行上限，请缩小查询范围（加 where 条件或 limit）后重试");
+                    }
+
+                    for (int i = 1; i <= columnCount; i++) {
+                        if (i > 1) {
+                            writer.write(",");
+                        }
+                        Object value = resultSet.getObject(i);
+                        writer.write(csvEscape(value == null ? "" : value.toString()));
+                    }
+                    writer.write("\n");
+                }
             }
         }
 
