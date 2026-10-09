@@ -1,5 +1,6 @@
 package com.example.sqlquery.util;
 
+import com.example.sqlquery.dialect.SqlDialect;
 import com.example.sqlquery.exception.BusinessException;
 import net.sf.jsqlparser.JSQLParserException;
 import net.sf.jsqlparser.expression.Function;
@@ -119,9 +120,24 @@ public final class SqlValidateUtil {
     /** MySQL 可执行注释的起始标记。内容是会被真正执行的，所以直接拒绝。 */
     private static final String EXECUTABLE_COMMENT_MARKER = "/*!";
 
-    public static void validate(String sql, Set<SqlType> allowedTypes) {
+    /**
+     * 校验一条 SQL 能不能执行。
+     *
+     * <p><b>为什么必须传方言</b>：危险函数与系统库的名单是<b>方言相关</b>的 ——
+     * MySQL 是 {@code sleep} / {@code load_file}，PostgreSQL 是 {@code pg_sleep} / {@code pg_read_file}，
+     * 名字一个都对不上。拿 MySQL 的名单去检查 PG 的 SQL，等于什么都没检查。
+     *
+     * <p>所以这里<b>不提供省略方言的重载</b>：多一个"忘了传"的口子，
+     * 就等于多一条"看起来在检查、其实没检查"的路径。
+     *
+     * @param dialect 该 SQL 将要执行的那个数据源的方言
+     */
+    public static void validate(String sql, Set<SqlType> allowedTypes, SqlDialect dialect) {
         if (sql == null || sql.isBlank()) {
             throw new BusinessException("SQL不能为空");
+        }
+        if (dialect == null) {
+            throw new BusinessException("无法确定该数据源的方言，拒绝执行");
         }
 
         // 第 1 步：解析 + 单语句
@@ -138,12 +154,12 @@ public final class SqlValidateUtil {
         // 一趟同时把「表名」和「函数名」都收上来，不需要走两遍。
         SqlInspector inspector = new SqlInspector();
         List<String> tables = inspector.getTableList(statement);
-        checkDangerousFunctions(inspector.foundFunctions);
-        checkSystemSchema(tables);
+        checkDangerousFunctions(dialect, inspector.foundFunctions);
+        checkSystemSchema(dialect, tables);
 
         // 第 4 步：解析器看不见的两个东西，只能回到字符串上判断
-        checkExecutableComment(stripStringLiterals(sql));
-        checkIntoOutFile(stripStringLiterals(statement.toString()));
+        checkExecutableComment(stripStringLiterals(sql, dialect));
+        checkIntoOutFile(stripStringLiterals(statement.toString(), dialect));
     }
 
     /**
@@ -188,19 +204,33 @@ public final class SqlValidateUtil {
         return SqlType.DDL;
     }
 
-    private static void checkDangerousFunctions(List<String> functionNames) {
+    private static void checkDangerousFunctions(SqlDialect dialect, List<String> functionNames) {
         for (String name : functionNames) {
-            if (DANGEROUS_FUNCTIONS.contains(normalizeIdentifier(name))) {
+            if (dialect.dangerousFunctions().contains(normalizeIdentifier(name))) {
                 throw new BusinessException("SQL包含危险函数：" + name);
             }
         }
     }
 
-    private static void checkSystemSchema(List<String> tableNames) {
+    /**
+     * 系统库检查，按方言分两步。
+     *
+     * <p>第一步看<b>库名前缀</b>；第二步看<b>不带前缀的表名</b> ——
+     * 后者只有 PostgreSQL 需要，因为 {@code pg_catalog} <b>默认就在 search_path 里</b>，
+     * {@code select * from pg_shadow} 不带前缀也能查到，只查前缀会整个漏掉。
+     * MySQL 没有这个性质（它的系统库必须带前缀），所以那边这一集合是空的。
+     */
+    private static void checkSystemSchema(SqlDialect dialect, List<String> tableNames) {
         for (String tableName : tableNames) {
             String schema = extractSchema(tableName);
-            if (schema != null && SYSTEM_SCHEMAS.contains(schema)) {
+            if (schema != null && dialect.systemSchemas().contains(schema)) {
                 throw new BusinessException("不允许访问系统库：" + schema);
+            }
+
+            // 不带库名前缀的表名：只有当整段名字就是那张表时才拦
+            String bare = normalizeIdentifier(tableName);
+            if (schema == null && dialect.dangerousTables().contains(bare)) {
+                throw new BusinessException("不允许访问系统表：" + tableName);
             }
         }
     }
@@ -262,20 +292,64 @@ public final class SqlValidateUtil {
      * <p>识别不出字符串时的行为是"吃到结尾"：宁可多屏蔽一点，
      * 也不要因为括号没配对就把剩下的内容当成代码去匹配。
      */
-    static String stripStringLiterals(String sql) {
+    static String stripStringLiterals(String sql, SqlDialect dialect) {
         StringBuilder output = new StringBuilder(sql.length());
         int i = 0;
         while (i < sql.length()) {
             char c = sql.charAt(i);
+
             if (c == '\'' || c == '"') {
                 output.append(' ');
                 i = skipQuoted(sql, i, c);
-            } else {
-                output.append(c);
-                i++;
+                continue;
             }
+
+            // PostgreSQL 的 $tag$...$tag$ / $$...$$ 也是字符串字面量。
+            // 不认它的话，一段含 "/*!" 或 "into outfile" 的字符串会被误判成危险 SQL。
+            //
+            // ⚠️ 这一步<b>必须按方言开</b>：MySQL 里 $ 是合法的标识符字符
+            // （col$name 是合法列名），在那里把 $...$ 当字面量，会把真正的代码
+            // 当成字符串屏蔽掉 —— 那是一个"漏检"，比误杀严重得多。
+            if (c == '$' && dialect != null && dialect.supportsDollarQuoting()) {
+                int end = skipDollarQuoted(sql, i);
+                if (end > i) {
+                    output.append(' ');
+                    i = end;
+                    continue;
+                }
+            }
+
+            output.append(c);
+            i++;
         }
         return output.toString();
+    }
+
+    /**
+     * 跳过一个 PostgreSQL 的美元引用字符串。
+     *
+     * <p>形式有两种：{@code $$...$$} 和 {@code $tag$...$tag$}（tag 是标识符）。
+     * 返回结束标记之后的下标；<b>认不出合法形式时返回原下标</b>，
+     * 交给主循环当普通字符处理 —— 这一点很重要：PG 里 {@code $1} 是参数占位符，
+     * 把它当引号开始会一路吃到结尾，把后面的代码全屏蔽掉。
+     */
+    private static int skipDollarQuoted(String sql, int start) {
+        int tagEnd = start + 1;
+        while (tagEnd < sql.length() && isDollarTagChar(sql.charAt(tagEnd))) {
+            tagEnd++;
+        }
+        // 开标记必须以 $ 结尾，否则不是美元引用
+        if (tagEnd >= sql.length() || sql.charAt(tagEnd) != '$') {
+            return start;
+        }
+
+        String delimiter = sql.substring(start, tagEnd + 1);   // 含两端的 $
+        int close = sql.indexOf(delimiter, tagEnd + 1);
+        return close < 0 ? sql.length() : close + delimiter.length();
+    }
+
+    private static boolean isDollarTagChar(char c) {
+        return Character.isLetterOrDigit(c) || c == '_';
     }
 
     /** 从 {@code start} 处的引号开始跳过一个字符串字面量，返回它后面第一个字符的下标。 */

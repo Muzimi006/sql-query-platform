@@ -3,6 +3,7 @@ package com.example.sqlquery.controller;
 import com.example.sqlquery.common.PageConstants;
 import com.example.sqlquery.common.Result;
 import com.example.sqlquery.common.UserContext;
+import com.example.sqlquery.dialect.SqlDialect;
 import com.example.sqlquery.dto.DbSourceDTO;
 
 import com.example.sqlquery.service.DbSourceService;
@@ -36,6 +37,17 @@ public class DbSourceController {
         Long userId = UserContext.get();
         dbSourceService.addDbSource(userId,dto);
         return Result.success();
+    }
+
+    /**
+     * 支持的数据库类型，供前端下拉框渲染。
+     *
+     * <p>前端不写死类型清单，是因为"后端支持了但下拉框里没有"这种不一致
+     * 不会有任何报错 —— 用户只会觉得这个功能不存在。
+     */
+    @GetMapping("/dialects")
+    public Result<List<SqlDialect.Option>> dialects() {
+        return Result.success(SqlDialect.options());
     }
 
     @GetMapping

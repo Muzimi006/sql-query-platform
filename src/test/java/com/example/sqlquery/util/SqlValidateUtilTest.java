@@ -1,6 +1,7 @@
 package com.example.sqlquery.util;
 
 import com.example.sqlquery.config.SqlPermissionProperties;
+import com.example.sqlquery.dialect.SqlDialect;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.service.SqlPermissionService;
 import org.junit.jupiter.api.DisplayName;
@@ -39,13 +40,16 @@ class SqlValidateUtilTest {
 
     private static final Set<SqlType> SELECT_ONLY = Set.of(SqlType.SELECT);
 
+    /** 本类绝大多数用例验的是 MySQL 下的行为；PostgreSQL 的差异在 DialectSpecific 里单独覆盖。 */
+    private static final SqlDialect MYSQL = SqlDialect.MYSQL;
+
     private static void assertRejected(String sql) {
         assertThrows(BusinessException.class,
-                () -> SqlValidateUtil.validate(sql, SELECT_ONLY), "应该被拒绝，但放行了：" + sql);
+                () -> SqlValidateUtil.validate(sql, SELECT_ONLY, MYSQL), "应该被拒绝，但放行了：" + sql);
     }
 
     private static void assertAllowed(String sql) {
-        assertDoesNotThrow(() -> SqlValidateUtil.validate(sql, SELECT_ONLY), "应该放行，但被拒了：" + sql);
+        assertDoesNotThrow(() -> SqlValidateUtil.validate(sql, SELECT_ONLY, MYSQL), "应该放行，但被拒了：" + sql);
     }
 
     /**
@@ -57,7 +61,7 @@ class SqlValidateUtilTest {
      */
     private static void assertRejectedBy(String sql, String expectedMessageFragment) {
         BusinessException e = assertThrows(BusinessException.class,
-                () -> SqlValidateUtil.validate(sql, SELECT_ONLY), "应该被拒绝，但放行了：" + sql);
+                () -> SqlValidateUtil.validate(sql, SELECT_ONLY, MYSQL), "应该被拒绝，但放行了：" + sql);
         assertTrue(e.getMessage().contains(expectedMessageFragment),
                 "拒绝原因不对。期望包含「" + expectedMessageFragment + "」，实际是「" + e.getMessage() + "」");
     }
@@ -100,7 +104,7 @@ class SqlValidateUtilTest {
         void nullOrEmptyWhitelistShouldRejectEverything() {
             // 白名单缺失时必须全拒，不能因为配置漏了就放行
             assertThrows(BusinessException.class,
-                    () -> SqlValidateUtil.validate("select * from user", null));
+                    () -> SqlValidateUtil.validate("select * from user", null, MYSQL));
         }
 
         private final SqlPermissionService permissions =
@@ -120,7 +124,7 @@ class SqlValidateUtilTest {
                     "未知角色必须是空权限集合");
             assertThrows(BusinessException.class,
                     () -> SqlValidateUtil.validate("select * from user",
-                            permissions.getAllowedTypes("UNKNOWN")));
+                            permissions.getAllowedTypes("UNKNOWN"), MYSQL));
         }
 
         /**
@@ -153,7 +157,7 @@ class SqlValidateUtilTest {
         void blankSqlShouldBeRejected() {
             assertRejected("");
             assertRejected("   ");
-            assertThrows(BusinessException.class, () -> SqlValidateUtil.validate(null, SELECT_ONLY));
+            assertThrows(BusinessException.class, () -> SqlValidateUtil.validate(null, SELECT_ONLY, MYSQL));
         }
     }
 
@@ -344,7 +348,7 @@ class SqlValidateUtilTest {
 
         @Test
         void shouldRemoveSingleQuotedContent() {
-            String stripped = SqlValidateUtil.stripStringLiterals("select 'abc' from t");
+            String stripped = SqlValidateUtil.stripStringLiterals("select 'abc' from t", MYSQL);
             assertFalse(stripped.contains("abc"));
             assertTrue(stripped.contains("select"));
             assertTrue(stripped.contains("from t"));
@@ -352,14 +356,14 @@ class SqlValidateUtilTest {
 
         @Test
         void shouldRemoveDoubleQuotedContent() {
-            assertFalse(SqlValidateUtil.stripStringLiterals("select \"abc\" from t").contains("abc"));
+            assertFalse(SqlValidateUtil.stripStringLiterals("select \"abc\" from t", MYSQL).contains("abc"));
         }
 
         @Test
         @DisplayName("SQL 标准的 '' 转义：两个引号表示一个字面量引号，字符串没有结束")
         void shouldHandleDoubledQuoteEscape() {
             // 'it''s' 是一个完整的字符串字面量，后面的 from t 不能被吞进去
-            String stripped = SqlValidateUtil.stripStringLiterals("select 'it''s' from t");
+            String stripped = SqlValidateUtil.stripStringLiterals("select 'it''s' from t", MYSQL);
             assertFalse(stripped.contains("it"));
             assertTrue(stripped.contains("from t"), "转义处理错误会把后面的代码一起吞掉，实际：" + stripped);
         }
@@ -367,20 +371,20 @@ class SqlValidateUtilTest {
         @Test
         @DisplayName("MySQL 的 \\' 反斜杠转义同样要认")
         void shouldHandleBackslashEscape() {
-            String stripped = SqlValidateUtil.stripStringLiterals("select 'a\\'b' from t");
+            String stripped = SqlValidateUtil.stripStringLiterals("select 'a\\'b' from t", MYSQL);
             assertTrue(stripped.contains("from t"), "反斜杠转义处理错误，实际：" + stripped);
         }
 
         @Test
         @DisplayName("未闭合的引号：吃到结尾，不能把后面的内容当成代码")
         void unterminatedQuoteShouldSwallowToEnd() {
-            String stripped = SqlValidateUtil.stripStringLiterals("select 'abc");
+            String stripped = SqlValidateUtil.stripStringLiterals("select 'abc", MYSQL);
             assertFalse(stripped.contains("abc"));
         }
 
         @Test
         void emptyInputShouldBeHandled() {
-            assertEquals("", SqlValidateUtil.stripStringLiterals(""));
+            assertEquals("", SqlValidateUtil.stripStringLiterals("", MYSQL));
         }
     }
 
@@ -412,6 +416,127 @@ class SqlValidateUtilTest {
         void shouldNoLongerAllowQuotedSchemaBypass() {
             assertRejected("select count(*) from `mysql`.`user`");
             assertRejected("select count(*) from \"mysql\".\"user\"");
+        }
+    }
+
+    // ==================================================================
+    // 方言差异 —— 这一组是本次多方言改造新增的
+    // ==================================================================
+
+    @Nested
+    @DisplayName("方言差异：MySQL 与 PostgreSQL 的危险名单完全不同")
+    class DialectSpecific {
+
+        private static final SqlDialect PG = SqlDialect.POSTGRESQL;
+
+        private void assertPgRejectedBy(String sql, String fragment) {
+            BusinessException e = assertThrows(BusinessException.class,
+                    () -> SqlValidateUtil.validate(sql, SELECT_ONLY, PG), "应该被拒绝，但放行了：" + sql);
+            assertTrue(e.getMessage().contains(fragment),
+                    "拒绝原因不对。期望含「" + fragment + "」，实际「" + e.getMessage() + "」");
+        }
+
+        private void assertPgAllowed(String sql) {
+            assertDoesNotThrow(() -> SqlValidateUtil.validate(sql, SELECT_ONLY, PG),
+                    "应该放行，但被拒了：" + sql);
+        }
+
+        @Test
+        @DisplayName("PG 的危险函数是另一套名字")
+        void postgresqlDangerousFunctionsAreDifferent() {
+            assertPgRejectedBy("select pg_sleep(1)", "危险函数");
+            assertPgRejectedBy("select pg_read_file('/etc/passwd')", "危险函数");
+            assertPgRejectedBy("select dblink_exec('dbname=x', 'delete from t')", "危险函数");
+            assertPgRejectedBy("select pg_terminate_backend(123)", "危险函数");
+        }
+
+        @Test
+        @DisplayName("★ MySQL 的名单拿来检查 PG 的 SQL 等于没检查")
+        void mysqlFunctionNamesMustNotBeUsedForPostgres() {
+            // sleep() 是 MySQL 的函数名。在 PG 里它根本不存在，
+            // 所以「PG 方言下不拦 sleep」不是漏检，而是不该拦 ——
+            // 真正该拦的 pg_sleep 已经在上一条里覆盖了。
+            //
+            // 这条用例的价值是<b>反向锁定</b>：如果哪天有人把两个方言的名单合并成一份，
+            // 它会失败，提醒"你正在用一套名单应付两种数据库"。
+            assertEquals(SqlDialect.MYSQL.dangerousFunctions().contains("sleep"), true);
+            assertEquals(SqlDialect.POSTGRESQL.dangerousFunctions().contains("sleep"), false);
+            assertTrue(java.util.Collections.disjoint(
+                            SqlDialect.MYSQL.dangerousFunctions(),
+                            SqlDialect.POSTGRESQL.dangerousFunctions()),
+                    "两个方言的危险函数名单不应该有交集 —— 有交集说明有人在照抄");
+        }
+
+        @Test
+        @DisplayName("PG 的系统库是 pg_catalog / information_schema")
+        void postgresqlSystemSchemas() {
+            assertPgRejectedBy("select * from pg_catalog.pg_class", "系统库");
+            assertPgRejectedBy("select * from information_schema.tables", "系统库");
+        }
+
+        @Test
+        @DisplayName("★ PG 的 pg_catalog 默认在 search_path 里，不带前缀也能访问")
+        void postgresqlBareTableNamesMustAlsoBeChecked() {
+            // 这是 PG 和 MySQL 的一个重要差异：MySQL 的系统库必须带库名前缀，
+            // 而 PG 的 pg_catalog 默认就在 search_path 里 ——
+            // 只检查"库名前缀"的实现会把下面这些<b>整个漏掉</b>。
+            assertPgRejectedBy("select * from pg_shadow", "系统表");
+            assertPgRejectedBy("select * from pg_authid", "系统表");
+            assertPgRejectedBy("select usename, passwd from pg_shadow", "系统表");
+        }
+
+        @Test
+        @DisplayName("PG 下无害的 pg_catalog 表不能被误拦")
+        void harmlessPostgresCatalogTablesShouldPass() {
+            // 只列真正敏感的那几张，不去穷举整个 pg_catalog ——
+            // 那会把 pg_type 这种无害的表也拦掉，属于"为了安全把功能搞坏"
+            assertPgAllowed("select * from pg_type");
+            assertPgAllowed("select * from pg_class");
+        }
+
+        @Test
+        @DisplayName("PG 专有语法要能正常解析并通过校验")
+        void postgresqlSyntaxShouldBeAccepted() {
+            assertPgAllowed("select id::text from t");
+            assertPgAllowed("select * from t where name ilike '%a%'");
+            assertPgAllowed("select * from generate_series(1, 10)");
+            assertPgAllowed("select * from t limit 10 offset 5");
+            assertPgAllowed("select jsonb_build_object('a', 1)");
+            assertPgAllowed("select * from t for update skip locked");
+        }
+
+        @Test
+        @DisplayName("PG 的 $$...$$ 字面量要被正确屏蔽，不能误杀")
+        void postgresqlDollarQuotingShouldBeStripped() {
+            // $$...$$ 里出现 /*! 或 into outfile 时不该被当成危险 SQL
+            assertPgAllowed("select $$/*!*/$$ as note");
+            assertPgAllowed("select $$into outfile$$ as note");
+
+            // $tag$...$tag$ 形式：JSqlParser 4.9 解析不了它（会先以语法错误拦下），
+            // 所以这里不跑完整的 validate，而是直接对<b>字面量屏蔽器</b>下断言 ——
+            // 屏蔽器的正确性不该依赖解析器恰好看不懂某个语法。
+            assertFalse(SqlValidateUtil.stripStringLiterals("select x $tag$/*!*/$tag$", PG).contains("/*!"),
+                    "带标签的美元引用没被屏蔽");
+        }
+
+        @Test
+        @DisplayName("★ MySQL 下不能把 $...$ 当字符串 —— $ 是合法的标识符字符")
+        void mysqlMustNotTreatDollarAsQuote() {
+            // 如果在 MySQL 下也认 $$ 引用，下面的 SQL 会被从头吃到尾，
+            // 后面的危险操作就被"屏蔽"掉了 —— 那是一个漏检，比误杀严重得多
+            assertRejected("select col$name from t where 1=1 /*!*/");
+            assertFalse(SqlDialect.MYSQL.supportsDollarQuoting());
+            assertTrue(SqlDialect.POSTGRESQL.supportsDollarQuoting());
+        }
+
+        @Test
+        @DisplayName("PG 的参数占位符 $1 不能被当成引号开始")
+        void postgresqlParameterPlaceholderShouldNotSwallowTheRest() {
+            // $1 是 PG 的参数占位符。把它当引号开始会一路吃到结尾，
+            // 后面的 /*! 就查不出来了 —— 那是一个漏检，比误杀严重得多。
+            String stripped = SqlValidateUtil.stripStringLiterals("select $1 /*!*/ 1", PG);
+            assertTrue(stripped.contains("/*!"),
+                    "$1 被当成了引号开始，把后面的内容吞掉了：" + stripped);
         }
     }
 }

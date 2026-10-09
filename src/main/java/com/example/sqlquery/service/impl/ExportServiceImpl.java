@@ -1,6 +1,7 @@
 package com.example.sqlquery.service.impl;
 
 import com.example.sqlquery.common.ExportStatus;
+import com.example.sqlquery.dialect.SqlDialect;
 import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.config.RabbitConfig;
 import com.example.sqlquery.service.SqlPermissionService;
@@ -54,7 +55,10 @@ public class ExportServiceImpl implements ExportService {
         // 所以这里不复用 getAllowedTypes(role)：即使 ADMIN 被允许在查询里执行写语句，
         // 导出也不该跟着放开。"两条链路共用同一套校验"这句话在这里是有例外的，
         // 而这个例外是收紧而不是放松。
-        SqlValidateUtil.validate(dto.getSql(), Set.of(SqlType.SELECT));
+        // 方言同样取自这个数据源：导出链路和查询链路用的是<b>不同</b>的方言实例，
+        // 因为它们各自已经取到了自己的 DbSource
+        SqlValidateUtil.validate(dto.getSql(), Set.of(SqlType.SELECT),
+                SqlDialect.fromType(dbSource.getType()));
 
         ExportTask task = new ExportTask();
         task.setUserId(userId);

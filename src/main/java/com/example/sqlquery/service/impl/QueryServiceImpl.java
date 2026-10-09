@@ -2,6 +2,7 @@ package com.example.sqlquery.service.impl;
 
 import com.example.sqlquery.dto.QueryDTO;
 import com.example.sqlquery.common.UserContext;
+import com.example.sqlquery.dialect.SqlDialect;
 import com.example.sqlquery.service.SqlPermissionService;
 import com.example.sqlquery.util.SqlType;
 import com.example.sqlquery.entity.DbSource;
@@ -60,7 +61,9 @@ public class QueryServiceImpl implements QueryService {
         DbSource dbSource = dbSourceService.getEnabledByIdAndUserId(userId, dto.getDataSourceId());
 
         Set<SqlType> allowedTypes = sqlPermissionService.getAllowedTypes(UserContext.getRole());
-        SqlValidateUtil.validate(dto.getSql(), allowedTypes);
+        // 方言取自这个数据源自己 —— 危险函数与系统库的名单是方言相关的，
+        // 拿 MySQL 的名单去检查 PostgreSQL 的 SQL 等于没检查
+        SqlValidateUtil.validate(dto.getSql(), allowedTypes, SqlDialect.fromType(dbSource.getType()));
 
         // 计时从"真正要发给数据库"开始。
         // 注意 SqlValidateUtil.validate 在上面就已经执行过了 —— 被白名单或危险规则

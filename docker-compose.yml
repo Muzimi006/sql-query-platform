@@ -12,6 +12,18 @@ services:
     volumes:
       - ./sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql
 
+  # PostgreSQL：多方言支持的验证环境。
+  # 它是"另一种方言"的活样本 —— 连接串前缀、驱动、默认端口、
+  # 危险函数名单、系统库名单、专有语法（$$ 引用、:: 转换）全都和 MySQL 不一样。
+  postgres:
+    image: postgres:16-alpine
+    container_name: sql-query-postgres
+    environment:
+      POSTGRES_PASSWORD: 123456
+      POSTGRES_DB: sql_query_platform_demo
+    ports:
+      - "5432:5432"
+
   redis:
     image: redis:7-alpine
     container_name: sql-query-redis

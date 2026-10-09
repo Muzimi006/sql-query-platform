@@ -37,6 +37,14 @@
 			<artifactId>mysql-connector-j</artifactId>
 			<scope>runtime</scope>
 		</dependency>
+		<!-- PostgreSQL 驱动。多方言支持的另一半：
+		     只有 MySQL 驱动时，即使代码里拼出了 jdbc:postgresql:// 也会在运行期报
+		     "No suitable driver"，而那是一个离根因很远的错误信息。 -->
+		<dependency>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>runtime</scope>
+		</dependency>
 		<dependency>
 			<groupId>org.projectlombok</groupId>
 			<artifactId>lombok</artifactId>

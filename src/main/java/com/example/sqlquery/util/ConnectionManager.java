@@ -1,5 +1,6 @@
 package com.example.sqlquery.util;
 
+import com.example.sqlquery.dialect.SqlDialect;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import com.zaxxer.hikari.HikariConfig;
@@ -55,8 +56,17 @@ public class ConnectionManager {
     }
 
     private HikariDataSource createDataSource(DbSource dbSource) {
+        SqlDialect dialect = SqlDialect.fromType(dbSource.getType());
+
         HikariConfig config = new HikariConfig();
         config.setJdbcUrl(JdbcUrlUtil.build(dbSource));
+
+        // 显式指定驱动类名，不让 Hikari 从 URL 里猜。
+        // 单方言时靠推断没问题（classpath 上只有那一个驱动），
+        // 但多方言之后 MySQL 和 PostgreSQL 的驱动会同时存在 ——
+        // 推断一旦猜错，报错是"driver not found"这类看不出真正原因的信息。
+        config.setDriverClassName(dialect.driverClassName());
+
         config.setUsername(dbSource.getUsername());
         config.setPassword(aesUtil.decrypt(dbSource.getPasswordEncrypted()));
         config.setMaximumPoolSize(MAX_POOL_SIZE);
