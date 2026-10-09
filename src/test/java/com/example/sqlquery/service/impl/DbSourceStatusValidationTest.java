@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class DbSourceStatusValidationTest {
 
     private final DbSourceServiceImpl service =
-            new DbSourceServiceImpl(null, null, null, null);
+            new DbSourceServiceImpl(null, null, null, null, null);
 
     @Test
     void shouldRejectStatusOutOfRange() {

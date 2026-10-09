@@ -13,7 +13,8 @@ import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.util.AesUtil;
 import com.example.sqlquery.util.JdbcUrlUtil;
 import com.example.sqlquery.vo.DbSourceVO;
-import com.example.sqlquery.util.ConnectionManager;
+import com.example.sqlquery.cache.DbSourceCacheInvalidator;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -39,15 +40,69 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
     private final AesUtil aesUtil;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
-    private final ConnectionManager connectionManager;
+    private final DbSourceCacheInvalidator invalidator;
+    private final SqlPlatformMetrics metrics;
 
-    private static final String CACHE_PREFIX = "datasource:";
+    private static final String LOCK_PREFIX = "lock:datasource:";
 
-    /** 缓存 key 的唯一构造入口：读、写、删都必须走这里，避免多处拼接不一致。 */
+    /**
+     * 缓存 key 的唯一构造入口：读、写、删都必须走这里，避免多处拼接不一致。
+     *
+     * <p>真正的拼接在 {@link DbSourceCacheInvalidator#cacheKey(Long)} ——
+     * 因为广播的接收端也要删同一个键，key 的构造必须只有一处实现。
+     */
     private String buildCacheKey(Long id) {
-        return CACHE_PREFIX + id;
+        return DbSourceCacheInvalidator.cacheKey(id);
     }
+
+    /**
+     * 不存在的 id 也要缓存（空值缓存），否则每次查一个不存在的 id 都会穿透到数据库。
+     *
+     * <p>用哨兵字符串而不是真的 {@code null}：Redis 里存不了 {@code null}，
+     * 而"键不存在"和"键的值是空"必须是两种可区分的状态 ——
+     * 前者要回源、后者要直接拒绝。
+     */
+    private static final String NULL_SENTINEL = "NULL";
+
+    private static final Duration NULL_SENTINEL_TTL = Duration.ofMinutes(5);
+
     private static final Duration CACHE_TTL = Duration.ofMinutes(30);
+
+    /** TTL 的随机抖动上限（秒），用来打散过期时间，避免大量缓存同时失效（缓存雪崩）。 */
+    private static final int CACHE_TTL_JITTER_SECONDS = 300;
+
+    /** 分布式锁的持有时长：超过这个时间没释放（持锁进程挂了），锁自动过期，不会永久卡死。 */
+    private static final Duration LOCK_TTL = Duration.ofSeconds(10);
+
+    /**
+     * 没抢到分布式锁时的<b>有界</b>等待：等别的实例把缓存建好。
+     *
+     * <p>这两个数字的取值依据：回源是一条按主键的查询加上一次 Redis 写入，
+     * 正常在 1~5 毫秒量级；500 毫秒已经比它宽两个数量级，
+     * 足以覆盖绝大多数情况，又不会让 Tomcat 线程被长时间占住。
+     * <b>它们描述的是"等待多久算异常"，不是"回源大概要多久"</b> ——
+     * 这一点和原来拍脑袋写死的 {@code sleep(50)} 有本质区别。
+     */
+    private static final long WAIT_FOR_REBUILD_TIMEOUT_MS = 500;
+
+    private static final long WAIT_FOR_REBUILD_INTERVAL_MS = 20;
+
+    /**
+     * JVM 内的分段锁（lock striping）。
+     *
+     * <p>数组长度固定，所以<b>不会有内存泄漏</b>：如果按 key 建一个
+     * {@code ConcurrentHashMap<String, Object>} 当锁表，数据源删掉后锁对象还在，
+     * 这是一个缓慢增长的泄漏；而分段锁的空间是常数。
+     *
+     * <p>代价是不同 key 偶尔会落到同一把锁上（哈希冲突），表现为两个无关的数据源
+     * 之间多了一点点串行 —— 只影响吞吐，不影响正确性，这个取舍是划算的。
+     *
+     * <p>分段数是 2 的幂，配合 {@link Math#floorMod} 做映射；
+     * 取 64 是因为冲突概率已经足够低（数据源数量通常是个位数到几十）。
+     */
+    private static final int LOCK_STRIPES = 64;
+
+    private final Object[] localLocks = new Object[LOCK_STRIPES];
 
     private static final DefaultRedisScript<Long> UNLOCK_SCRIPT = new DefaultRedisScript<>(
             "if redis.call('get', KEYS[1]) == ARGV[1] then "
@@ -57,11 +112,17 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
     );
 
 
-    public DbSourceServiceImpl(AesUtil aesUtil, StringRedisTemplate redisTemplate, ObjectMapper objectMapper, ConnectionManager connectionManager) {
+    public DbSourceServiceImpl(AesUtil aesUtil, StringRedisTemplate redisTemplate,
+                              ObjectMapper objectMapper, DbSourceCacheInvalidator invalidator,
+                              SqlPlatformMetrics metrics) {
         this.aesUtil = aesUtil;
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
-        this.connectionManager = connectionManager;
+        this.invalidator = invalidator;
+        this.metrics = metrics;
+        for (int i = 0; i < LOCK_STRIPES; i++) {
+            this.localLocks[i] = new Object();
+        }
     }
 
     @Override
@@ -84,10 +145,23 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         }
     }
 
+    /**
+     * 列表查询。
+     *
+     * <p>必须带排序：数据库<b>不保证</b>无 ORDER BY 时的返回顺序，
+     * 加了删除和新增之后顺序会变得不可预测（实测过：同一份数据两次请求顺序不同）。
+     * 用 created_at 倒序是"最近添加的在最上面"，符合使用直觉。
+     *
+     * <p>再补一个 id 倒序作为<b>并列时的确定性兜底</b>：
+     * created_at 只精确到秒，同一秒内建的多条数据源会并列，
+     * 只按 created_at 排序时它们之间的顺序仍然是随机的。
+     */
     @Override
     public List<DbSourceVO> listByUserId(Long userId) {
         LambdaQueryWrapper<DbSource> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(DbSource::getUserId,userId);
+        wrapper.eq(DbSource::getUserId, userId)
+               .orderByDesc(DbSource::getCreatedAt)
+               .orderByDesc(DbSource::getId);
         return list(wrapper).stream()
                 .map(this::toVO)
                 .collect(Collectors.toList());
@@ -114,8 +188,9 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
             throw new BusinessException("数据源名称已存在");
         }
 
-        deleteCache(id);
-        connectionManager.evict(id);
+        // 修改可能改了连接串或密码 —— 必须让所有实例的连接池都失效，
+        // 否则别的实例会拿着旧密码的连接池继续跑，表现为间歇性失败
+        invalidator.invalidateEverywhere(id);
     }
 
     @Override
@@ -125,13 +200,12 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
             throw new BusinessException("数据源不存在");
         }
         removeById(id);
-        deleteCache(id);
-        connectionManager.evict(id);
+        invalidator.invalidateEverywhere(id);
     }
 
     @Override
     public boolean testConnection(DbSourceDTO dto) {
-        DbSource dbSource =toEntity(dto);
+        DbSource dbSource = toEntity(dto);
         String url = JdbcUrlUtil.build(dbSource);
         try(Connection connection = DriverManager.getConnection(
                 url,
@@ -148,7 +222,8 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         Page<DbSource> page = new Page<>(current, size);
         LambdaQueryWrapper<DbSource> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(DbSource::getUserId, userId)
-               .orderByDesc(DbSource::getCreatedAt);
+               .orderByDesc(DbSource::getCreatedAt)
+               .orderByDesc(DbSource::getId);
 
         Page<DbSource> result = page(page, wrapper);
 
@@ -157,77 +232,51 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         return voPage;
     }
 
+    /**
+     * 按 id 取数据源（带缓存）。
+     *
+     * <h2>缓存击穿是怎么被真正堵住的</h2>
+     *
+     * <p>击穿指的是：某个热 key 过期的那一瞬间，大量并发请求同时发现缓存没了，
+     * 于是一起涌向数据库。原来的实现是"抢不到 Redis 锁就 {@code sleep(50)} 再读一次缓存，
+     * 还没命中就直接查库" —— 它只降低了概率，没有根除：
+     * 50 毫秒是拍脑袋定的（没有按回源耗时的 P99 度量过），
+     * 而且等待者最终仍然会去查库，QPS 一高照样把数据库打穿。
+     *
+     * <p>现在的做法是两道锁，各自负责一段：
+     *
+     * <ol>
+     *   <li><b>JVM 内分段锁（{@link #localLocks}）</b>：同一个 key 在本进程内
+     *       只允许一个线程回源，其余线程阻塞等它。
+     *       这一层就足以让<b>单实例部署</b>下同一 key 的数据库访问从 N 次降到 1 次
+     *       —— 也就是"根除"，而不是"降低概率"。</li>
+     *   <li><b>Redis 分布式锁</b>：多实例部署时，让跨实例也只有一个回源者。
+     *       没抢到锁的实例走 {@link #waitForRebuild}：<b>有界</b>轮询等缓存出现，
+     *       拿到就用；等不到才自己回源，并打 WARN 记录这条降级路径。
+     *       等不到是显式选择的兜底，不是没想过。</li>
+     * </ol>
+     *
+     * <p>为什么不是"逻辑过期 + 异步重建"：那种方案能让等待者<b>永远不阻塞</b>、
+     * 代价是短时间返回旧数据。本项目的数据源元数据（启用/停用、密码、连接串）
+     * 一旦变更就必须立刻生效 —— 返回"已停用"的旧值意味着用户仍能执行 SQL，
+     * 这是安全问题，不能用"最终一致"换那点延迟。所以这里选择让等待者短暂阻塞。
+     */
     @Override
     public DbSource getByIdAndUserId(Long userId, Long id) {
         String cacheKey = buildCacheKey(id);
 
-        String cached = getCacheQuietly(cacheKey);
-        if ("NULL".equals(cached)) {
-            throw new BusinessException("数据源不存在");
-        }
+        DbSource cached = readCacheOrThrow(cacheKey);
         if (cached != null) {
-            try {
-                return objectMapper.readValue(cached, DbSource.class);
-            } catch (Exception e) {
-                // 缓存内容异常，删除后走数据库
-                deleteCache(id);
-            }
+            return cached;
         }
 
-        String lockKey = "lock:datasource:" + id;
-        String lockValue = UUID.randomUUID().toString();
-        Boolean locked = false;
-        try {
-            locked = redisTemplate.opsForValue()
-                    .setIfAbsent(lockKey, lockValue, Duration.ofSeconds(10));
-        } catch (Exception e) {
-            // Redis 异常，直接查数据库
-            log.warn("获取缓存回源锁失败，降级为直接查库。lockKey={}", lockKey, e);
-            locked = false;
-        }
-
-        if (!Boolean.TRUE.equals(locked)) {
-            // 没拿到锁，等待一下再读缓存
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        synchronized (localLocks[Math.floorMod(cacheKey.hashCode(), LOCK_STRIPES)]) {
+            // 双重检查：等锁的这段时间里，拿到锁的那个线程很可能已经把缓存建好了
+            DbSource rebuiltWhileWaiting = readCacheOrThrow(cacheKey);
+            if (rebuiltWhileWaiting != null) {
+                return rebuiltWhileWaiting;
             }
-            String retryCached = getCacheQuietly(cacheKey);
-            if ("NULL".equals(retryCached)) {
-                throw new BusinessException("数据源不存在");
-            }
-            if (retryCached != null) {
-                try {
-                    return objectMapper.readValue(retryCached, DbSource.class);
-                } catch (Exception e) {
-                    deleteCache(id);
-                }
-            }
-        }
-
-        try {
-            DbSource dbSource = getById(id);
-            if (dbSource == null || !dbSource.getUserId().equals(userId)) {
-                setCacheQuietly(cacheKey, "NULL", Duration.ofMinutes(5));
-                throw new BusinessException("数据源不存在");
-            }
-
-            // TTL 加随机值，避免大量缓存同时过期（缓存雪崩）
-            long randomTtl = CACHE_TTL.getSeconds() + ThreadLocalRandom.current().nextInt(300);
-            String cacheValue = writeJsonQuietly(dbSource);
-            if (cacheValue != null) {
-                setCacheQuietly(cacheKey, cacheValue, Duration.ofSeconds(randomTtl));
-            }
-            return dbSource;
-        } finally {
-            if (Boolean.TRUE.equals(locked)) {
-                try {
-                    redisTemplate.execute(UNLOCK_SCRIPT, Collections.singletonList(lockKey), lockValue);
-                } catch (Exception e) {
-                    // 忽略释放锁失败
-                }
-            }
+            return loadAndCache(userId, id, cacheKey);
         }
     }
 
@@ -240,6 +289,132 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
             throw new BusinessException("数据源已停用");
         }
         return dbSource;
+    }
+
+    /**
+     * 回源并写缓存。<b>调用方必须已经持有该 key 的本地分段锁。</b>
+     *
+     * <p>内部再用一把 Redis 锁，是为了让多实例部署时跨进程也只有一个人回源。
+     */
+    private DbSource loadAndCache(Long userId, Long id, String cacheKey) {
+        String lockKey = LOCK_PREFIX + id;
+        String lockValue = UUID.randomUUID().toString();
+        boolean locked = tryLockQuietly(lockKey, lockValue);
+
+        if (!locked) {
+            // 没抢到分布式锁 = 另一个实例正在回源。有界等待它把缓存建好。
+            DbSource rebuiltByOtherInstance = waitForRebuild(cacheKey);
+            if (rebuiltByOtherInstance != null) {
+                return rebuiltByOtherInstance;
+            }
+            // 等不到（对方失败或超时）：自己回源。
+            // 这是显式的降级选择 —— 相比"让请求失败"，多查一次库的代价更小。
+            log.warn("等待其他实例重建缓存超时，本实例直接回源。dataSourceId={}, 等待上限={}ms",
+                    id, WAIT_FOR_REBUILD_TIMEOUT_MS);
+        }
+
+        try {
+            DbSource dbSource = getById(id);
+            if (dbSource == null || !dbSource.getUserId().equals(userId)) {
+                // 缓存在这里也走统一入口写，保证"读、写、删"三处 key 一致
+                setCacheQuietly(cacheKey, NULL_SENTINEL, NULL_SENTINEL_TTL);
+                throw new BusinessException("数据源不存在");
+            }
+
+            long randomTtl = CACHE_TTL.getSeconds() + ThreadLocalRandom.current().nextInt(CACHE_TTL_JITTER_SECONDS);
+            String cacheValue = writeJsonQuietly(dbSource);
+            if (cacheValue != null) {
+                setCacheQuietly(cacheKey, cacheValue, Duration.ofSeconds(randomTtl));
+            }
+            return dbSource;
+        } finally {
+            if (locked) {
+                unlockQuietly(lockKey, lockValue);
+            }
+        }
+    }
+
+    /**
+     * 有界轮询等待缓存被别的实例建好。
+     *
+     * <p>返回 {@code null} 表示在 {@link #WAIT_FOR_REBUILD_TIMEOUT_MS} 内都没等到，
+     * 由调用方决定怎么降级。
+     */
+    private DbSource waitForRebuild(String cacheKey) {
+        long deadline = System.currentTimeMillis() + WAIT_FOR_REBUILD_TIMEOUT_MS;
+        while (System.currentTimeMillis() < deadline) {
+            sleepQuietly(WAIT_FOR_REBUILD_INTERVAL_MS);
+            // readCacheOrThrow 命中 NULL 哨兵时会直接抛「数据源不存在」，
+            // 这是正确的：确认不存在，不需要再等也不需要回源
+            DbSource cached = readCacheOrThrow(cacheKey);
+            if (cached != null) {
+                return cached;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 读缓存，三态语义：
+     * <ul>
+     *   <li>命中实体 → 返回实体</li>
+     *   <li>命中 {@link #NULL_SENTINEL} → 抛「数据源不存在」（不回源，这是空值缓存的意义）</li>
+     *   <li>未命中 → 返回 {@code null}，由调用方回源</li>
+     * </ul>
+     */
+    private DbSource readCacheOrThrow(String cacheKey) {
+        String cached = getCacheQuietly(cacheKey);
+        if (cached == null) {
+            // 计数放在这里而不是调用方：命中与否就是"能不能省掉一次数据库查询"，
+            // 这个判断只在读到值的那一刻才真正确定（包括下面命中空值哨兵的情况 ——
+            // 它同样省掉了一次查询，所以算命中）
+            metrics.recordCacheMiss();
+            return null;
+        }
+        metrics.recordCacheHit();
+
+        if (NULL_SENTINEL.equals(cached)) {
+            throw new BusinessException("数据源不存在");
+        }
+        try {
+            return objectMapper.readValue(cached, DbSource.class);
+        } catch (Exception e) {
+            // 缓存内容坏了（例如实体改了字段名，旧结构反序列化不了）。
+            // 必须删掉这条脏缓存，否则每次请求都会走到这里、每次都白解析一遍。
+            log.warn("缓存反序列化失败，已删除该缓存并回源。cacheKey={}", cacheKey, e);
+            deleteCacheByKey(cacheKey);
+            return null;
+        }
+    }
+
+    private boolean tryLockQuietly(String lockKey, String lockValue) {
+        try {
+            return Boolean.TRUE.equals(redisTemplate.opsForValue()
+                    .setIfAbsent(lockKey, lockValue, LOCK_TTL));
+        } catch (Exception e) {
+            // Redis 不可用：当作"没抢到锁"处理，交给 waitForRebuild 走有界等待 →
+            // 超时后回源。这样 Redis 挂了只是失去缓存，不会让接口整体不可用。
+            log.warn("获取缓存回源锁失败，将按未持锁处理。lockKey={}", lockKey, e);
+            return false;
+        }
+    }
+
+    private void unlockQuietly(String lockKey, String lockValue) {
+        try {
+            redisTemplate.execute(UNLOCK_SCRIPT, Collections.singletonList(lockKey), lockValue);
+        } catch (Exception e) {
+            // 释放失败没关系：锁上有 TTL，到点自动消失
+            log.warn("释放缓存回源锁失败（锁会由 TTL 自动过期）。lockKey={}", lockKey);
+        }
+    }
+
+    private void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            // 恢复中断标记：吞掉 InterruptedException 会让上层永远看不到"该停了"
+            Thread.currentThread().interrupt();
+        }
     }
 
     private String getCacheQuietly(String cacheKey) {
@@ -262,7 +437,7 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         try {
             return objectMapper.writeValueAsString(dbSource);
         } catch (JsonProcessingException e) {
-            // 序列化失败只影响缓存，不影响主流程
+            log.warn("数据源序列化失败，本次不写缓存。id={}", dbSource.getId(), e);
             return null;
         }
     }
@@ -292,8 +467,9 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         DbSource dbSource = getByIdAndUserId(userId, id);
         dbSource.setStatus(status);
         updateById(dbSource);
-        deleteCache(id);
-        connectionManager.evict(id);
+        // 停用 / 启用同样要广播：本实例的缓存在 Redis 里是共享的，
+        // 删掉之后别的实例读到的就是新状态；但连接池是本进程的，必须靠广播清
+        invalidator.invalidateEverywhere(id);
     }
 
     private boolean checkNameUniqueExcludeId(Long userId, String name, Long excludeId) {
@@ -304,12 +480,8 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         return count(wrapper) == 0;
     }
 
-    private void deleteCache(Long id) {
-        try {
-            redisTemplate.delete(buildCacheKey(id));
-        } catch (Exception e) {
-            // 缓存删除失败不影响主流程
-        }
+    private void deleteCacheByKey(String cacheKey) {
+        invalidator.deleteCacheQuietly(cacheKey);
     }
 
     private DbSource toEntity(DbSourceDTO dto){

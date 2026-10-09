@@ -4,7 +4,9 @@ import com.example.sqlquery.dto.DbSourceDTO;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.util.AesUtil;
-import com.example.sqlquery.util.ConnectionManager;
+import com.example.sqlquery.cache.DbSourceCacheInvalidator;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -39,8 +41,9 @@ class DbSourceNameUniqueTest {
         AesUtil aesUtil = Mockito.mock(AesUtil.class);
         Mockito.when(aesUtil.encrypt(anyString())).thenReturn("v1:encrypted");
 
-        ConnectionManager connectionManager = Mockito.mock(ConnectionManager.class);
-        service = Mockito.spy(new DbSourceServiceImpl(aesUtil, null, null, connectionManager));
+        DbSourceCacheInvalidator invalidator = Mockito.mock(DbSourceCacheInvalidator.class);
+        service = Mockito.spy(new DbSourceServiceImpl(aesUtil, null, null, invalidator,
+                new SqlPlatformMetrics(new SimpleMeterRegistry())));
 
         dto = new DbSourceDTO();
         dto.setName("生产库");

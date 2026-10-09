@@ -3,7 +3,9 @@ package com.example.sqlquery.service.impl;
 import com.example.sqlquery.common.DbSourceStatus;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.exception.BusinessException;
-import com.example.sqlquery.util.ConnectionManager;
+import com.example.sqlquery.cache.DbSourceCacheInvalidator;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -33,8 +35,10 @@ class DbSourceEntryPointTest {
 
     @BeforeEach
     void setUp() {
-        ConnectionManager connectionManager = Mockito.mock(ConnectionManager.class);
-        service = Mockito.spy(new DbSourceServiceImpl(null, null, null, connectionManager));
+        // 第 4 个参数是失效器：changeStatus 会调它去清本地连接池并广播
+        DbSourceCacheInvalidator invalidator = Mockito.mock(DbSourceCacheInvalidator.class);
+        service = Mockito.spy(new DbSourceServiceImpl(null, null, null, invalidator,
+                new SqlPlatformMetrics(new SimpleMeterRegistry())));
     }
 
     private DbSource sourceWithStatus(Integer status) {
