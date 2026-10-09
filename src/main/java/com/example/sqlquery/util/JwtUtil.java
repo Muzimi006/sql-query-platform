@@ -6,6 +6,7 @@ import com.auth0.jwt.interfaces.DecodedJWT;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.Date;
 
 @Component
@@ -59,5 +60,23 @@ public class JwtUtil {
      */
     public String getRole(DecodedJWT jwt) {
         return jwt.getClaim("role").asString();
+    }
+
+    /**
+     * 从<b>已验签</b>的 Token 中取距离过期还剩多久。
+     *
+     * <p>用途：把 token 加入黑名单时，TTL 只需要覆盖「这个 token 还有可能被使用」的时间窗口。
+     * 原来硬编码 7 天（{@code Duration.ofDays(7)}）比 token 本身的有效期还长，
+     * 结果是 Redis 里堆着一批<b>永远不会再被检查</b>的垃圾键。
+     *
+     * <p>返回负值或零表示已经过期。调用方自己决定怎么处理 ——
+     * 本方法只做换算，不做判断，避免"过期即拒绝"这个策略散落在多处。
+     */
+    public Duration getRemainingValidity(DecodedJWT jwt) {
+        Date expiresAt = jwt.getExpiresAt();
+        if (expiresAt == null) {
+            return Duration.ZERO;
+        }
+        return Duration.ofMillis(expiresAt.getTime() - System.currentTimeMillis());
     }
 }
