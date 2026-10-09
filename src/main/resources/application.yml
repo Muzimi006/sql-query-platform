@@ -71,6 +71,31 @@ redis:
   # 在应用就绪后启动，失败就按这个间隔重试。
   subscriber-retry-ms: 30000
 
+platform:
+  # 管理员邀请码。注册时带上它才能拿到 ADMIN 角色。
+  #
+  # 留空（默认）= 关闭自助创建管理员，任何人都注册不出 ADMIN 账号。
+  # ⚠️ 这是一个凭据，只从环境变量注入，不要写进配置文件、更不要提交进仓库。
+  #
+  # 为什么用邀请码而不是"把某个用户名写进配置"：后者可以被抢注 ——
+  # 只要没人先注册那个名字，任何人都能注册它并直接拿到管理员权限。
+  admin-register-code: ${ADMIN_REGISTER_CODE:}
+
+  sql-permission:
+    # 角色 -> 允许执行的语句类型。
+    # 不配就用代码里的默认值（见 SqlPermissionProperties）：
+    #   USER  = SELECT
+    #   ADMIN = SELECT, INSERT, UPDATE, DELETE
+    # DDL 默认不在任何角色里 —— DROP TABLE 这类语句在本平台没有正当用途，
+    # 要开必须在这里显式配置，而不是"因为是管理员所以顺手给了"。
+    #
+    # 配了这里就会**整体替换**默认值，不是合并：写少一个角色，
+    # 那个角色的用户会立刻变成"什么都不能执行"（fail-closed）。
+    #
+    # role-whitelist:
+    #   USER:  [SELECT]
+    #   ADMIN: [SELECT, INSERT, UPDATE, DELETE]
+
 query:
   rate-limit:
     # 单用户每分钟允许执行的查询条数。

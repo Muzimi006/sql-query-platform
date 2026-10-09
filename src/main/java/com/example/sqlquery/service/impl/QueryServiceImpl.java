@@ -2,7 +2,7 @@ package com.example.sqlquery.service.impl;
 
 import com.example.sqlquery.dto.QueryDTO;
 import com.example.sqlquery.common.UserContext;
-import com.example.sqlquery.config.SqlPermissionConfig;
+import com.example.sqlquery.service.SqlPermissionService;
 import com.example.sqlquery.util.SqlType;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.exception.BusinessException;
@@ -33,6 +33,7 @@ public class QueryServiceImpl implements QueryService {
     private final QueryHistoryService queryHistoryService;
     private final ConnectionManager connectionManager;
     private final SqlPlatformMetrics metrics;
+    private final SqlPermissionService sqlPermissionService;
 
     /** 单次查询最多返回的行数，超出则截断并置 truncated 标记。 */
     private static final int MAX_ROWS = 1000;
@@ -43,11 +44,13 @@ public class QueryServiceImpl implements QueryService {
     public QueryServiceImpl(DbSourceService dbSourceService,
                             QueryHistoryService queryHistoryService,
                             ConnectionManager connectionManager,
-                            SqlPlatformMetrics metrics) {
+                            SqlPlatformMetrics metrics,
+                            SqlPermissionService sqlPermissionService) {
         this.dbSourceService = dbSourceService;
         this.queryHistoryService = queryHistoryService;
         this.connectionManager = connectionManager;
         this.metrics = metrics;
+        this.sqlPermissionService = sqlPermissionService;
     }
 
     @Override
@@ -56,7 +59,7 @@ public class QueryServiceImpl implements QueryService {
         // 直接调 MyBatis-Plus 的 getById 会绕过 Redis 缓存，让缓存形同虚设
         DbSource dbSource = dbSourceService.getEnabledByIdAndUserId(userId, dto.getDataSourceId());
 
-        Set<SqlType> allowedTypes = SqlPermissionConfig.getByRole(UserContext.getRole());
+        Set<SqlType> allowedTypes = sqlPermissionService.getAllowedTypes(UserContext.getRole());
         SqlValidateUtil.validate(dto.getSql(), allowedTypes);
 
         // 计时从"真正要发给数据库"开始。
@@ -88,6 +91,22 @@ public class QueryServiceImpl implements QueryService {
         }
     }
 
+    /**
+     * 组装"没有结果集"的执行结果（INSERT / UPDATE / DELETE）。
+     *
+     * <p>返回空的 `columns`/`rows` 加上影响行数，而不是硬塞一个假的结果集 ——
+     * 前端可以据此显示"影响 N 行"，不需要去猜"rows 为空"到底是"查到 0 行"
+     * 还是"这条语句本来就不返回数据"。
+     */
+    private QueryVO buildUpdateResult(Statement statement) throws SQLException {
+        QueryVO vo = new QueryVO();
+        vo.setColumns(List.of());
+        vo.setRows(List.of());
+        vo.setTruncated(false);
+        vo.setAffectedRows(statement.getUpdateCount());
+        return vo;
+    }
+
     private QueryVO doExecute(DbSource dbSource, String sql) throws SQLException {
         try (Connection connection = connectionManager.getConnection(dbSource);
              Statement statement = connection.createStatement()) {
@@ -96,7 +115,19 @@ public class QueryServiceImpl implements QueryService {
             statement.setMaxRows(MAX_ROWS + 1);
             statement.setQueryTimeout(QUERY_TIMEOUT_SECONDS);
 
-            try (ResultSet resultSet = statement.executeQuery(sql)) {
+            // ⚠️ 用 execute() 而不是 executeQuery()。
+            // executeQuery() 只接受"会产生结果集"的语句，对 INSERT/UPDATE/DELETE 会直接抛
+            // "Statement.executeQuery() cannot issue statements that do not produce result sets"。
+            // 这条限制在"所有角色都只能 SELECT"的时候看不出来，
+            // 但一旦按角色放开写语句，就会出现「权限放行了、执行层却做不到」的自相矛盾。
+            // execute() 返回"这次执行有没有结果集"，两种情况分别处理。
+            boolean hasResultSet = statement.execute(sql);
+
+            if (!hasResultSet) {
+                return buildUpdateResult(statement);
+            }
+
+            try (ResultSet resultSet = statement.getResultSet()) {
                 ResultSetMetaData metaData = resultSet.getMetaData();
                 int columnCount = metaData.getColumnCount();
 

@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.example.sqlquery.entity.User;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.mapper.UserMapper;
+import com.example.sqlquery.service.AdminRegistrationPolicy;
 import com.example.sqlquery.service.UserService;
 import com.example.sqlquery.vo.UserVO;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -14,13 +15,16 @@ import org.springframework.stereotype.Service;
 public class UserServiceImpl extends ServiceImpl<UserMapper,User> implements UserService {
 
     private final PasswordEncoder passwordEncoder;
+    private final AdminRegistrationPolicy adminRegistrationPolicy;
 
-    public UserServiceImpl(PasswordEncoder passwordEncoder) {
+    public UserServiceImpl(PasswordEncoder passwordEncoder,
+                           AdminRegistrationPolicy adminRegistrationPolicy) {
         this.passwordEncoder = passwordEncoder;
+        this.adminRegistrationPolicy = adminRegistrationPolicy;
     }
 
     @Override
-    public UserVO register(String username, String password, String nickname) {
+    public UserVO register(String username, String password, String nickname, String adminCode) {
         User exist = getByUsername(username);
         if(exist!=null){
             throw new BusinessException("用户名已存在");
@@ -30,7 +34,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper,User> implements Use
         user.setUsername(username);
         user.setPassword(passwordEncoder.encode(password));
         user.setNickname(nickname);
-        user.setRole("USER");
+        // 角色由策略决定，不在这里写死 —— 原来固定成 USER 意味着
+        // 权限配置里的 ADMIN 分支永远到不了，等于没有管理员这个角色
+        user.setRole(adminRegistrationPolicy.resolveRole(adminCode));
         user.setStatus(1);
         save(user);
         return toVO(user);

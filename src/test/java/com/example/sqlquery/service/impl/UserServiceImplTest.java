@@ -2,6 +2,7 @@ package com.example.sqlquery.service.impl;
 
 import com.example.sqlquery.entity.User;
 import com.example.sqlquery.exception.BusinessException;
+import com.example.sqlquery.service.AdminRegistrationPolicy;
 import com.example.sqlquery.vo.UserVO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -47,7 +48,10 @@ class UserServiceImplTest {
     @BeforeEach
     void setUp() {
         passwordEncoder = new BCryptPasswordEncoder();
-        userService = spy(new UserServiceImpl(passwordEncoder));
+        // 本类只验密码链路，角色策略用 mock：不配邀请码时它返回 USER
+        AdminRegistrationPolicy policy = mock(AdminRegistrationPolicy.class);
+        doReturn("USER").when(policy).resolveRole(any());
+        userService = spy(new UserServiceImpl(passwordEncoder, policy));
     }
 
     @Test
@@ -55,7 +59,7 @@ class UserServiceImplTest {
         doReturn(null).when(userService).getByUsername(anyString());
         doReturn(true).when(userService).save(any(User.class));
 
-        userService.register("alice", "123456", "Alice");
+        userService.register("alice", "123456", "Alice", null);
 
         ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
         verify(userService).save(captor.capture());
@@ -64,14 +68,14 @@ class UserServiceImplTest {
         assertNotEquals("123456", saved.getPassword(), "明文密码绝不能落库");
         assertTrue(passwordEncoder.matches("123456", saved.getPassword()),
                 "存进去的必须是能用 matches 校验通过的密文");
-        assertEquals("USER", saved.getRole(), "新注册用户的角色应固定为 USER");
+        assertEquals("USER", saved.getRole(), "不带邀请码的普通注册应该是 USER 角色");
     }
 
     @Test
     void registerShouldRejectDuplicateUsername() {
         doReturn(new User()).when(userService).getByUsername(anyString());
 
-        assertThrows(BusinessException.class, () -> userService.register("alice", "123456", "Alice"));
+        assertThrows(BusinessException.class, () -> userService.register("alice", "123456", "Alice", null));
         verify(userService, never()).save(any(User.class));
     }
 

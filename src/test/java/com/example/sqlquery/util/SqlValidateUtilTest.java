@@ -1,7 +1,8 @@
 package com.example.sqlquery.util;
 
-import com.example.sqlquery.config.SqlPermissionConfig;
+import com.example.sqlquery.config.SqlPermissionProperties;
 import com.example.sqlquery.exception.BusinessException;
+import com.example.sqlquery.service.SqlPermissionService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -13,6 +14,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -101,12 +103,50 @@ class SqlValidateUtilTest {
                     () -> SqlValidateUtil.validate("select * from user", null));
         }
 
+        private final SqlPermissionService permissions =
+                new SqlPermissionService(new SqlPermissionProperties());
+
+        /**
+         * ⚠️ 这条用例固定的是<b>改过之后</b>的行为。
+         *
+         * <p>旧实现是"未知角色兜底成 SELECT"：数据库里角色被写错一个字母，
+         * 用户会<b>静默地</b>拿到读权限，没有任何地方报错。
+         * 现在改成 fail-closed（空集合 = 什么都不允许），与
+         * "白名单缺失时全拒"保持同一个原则：权限的默认值猜错方向，代价是不对称的。
+         */
         @Test
-        void unknownRoleShouldFallBackToSelectOnly() {
+        void unknownRoleShouldBeRejectedEntirely() {
+            assertTrue(permissions.getAllowedTypes("UNKNOWN").isEmpty(),
+                    "未知角色必须是空权限集合");
             assertThrows(BusinessException.class,
-                    () -> SqlValidateUtil.validate("delete from user", SqlPermissionConfig.getByRole("UNKNOWN")));
-            assertDoesNotThrow(() ->
-                    SqlValidateUtil.validate("select * from user", SqlPermissionConfig.getByRole("UNKNOWN")));
+                    () -> SqlValidateUtil.validate("select * from user",
+                            permissions.getAllowedTypes("UNKNOWN")));
+        }
+
+        /**
+         * 旧实现在这里会抛 NPE：{@code Map.of(...).getOrDefault(null, ...)}
+         * 对不可变 Map 传 null 键是不允许的，NPE 会被全局处理器翻译成「系统异常」——
+         * 一个权限问题伪装成了服务端故障。
+         */
+        @Test
+        void nullRoleShouldNotThrowNpe() {
+            assertDoesNotThrow(() -> permissions.getAllowedTypes(null));
+            assertTrue(permissions.getAllowedTypes(null).isEmpty());
+            assertTrue(permissions.getAllowedTypes("   ").isEmpty());
+        }
+
+        @Test
+        @DisplayName("角色大小写不敏感，且 USER 与 ADMIN 的权限必须真的不同")
+        void rolesShouldBeCaseInsensitiveAndActuallyDiffer() {
+            assertTrue(permissions.getAllowedTypes("user").contains(SqlType.SELECT));
+
+            Set<SqlType> admin = permissions.getAllowedTypes("admin");
+            assertTrue(admin.contains(SqlType.SELECT));
+            // 这条是本次修复的核心：以前 USER 和 ADMIN 配的是同一套权限，
+            // "按角色区分"这一层等于没落地
+            assertNotEquals(permissions.getAllowedTypes("USER"), admin,
+                    "USER 与 ADMIN 的权限集合不能再相同");
+            assertTrue(admin.contains(SqlType.UPDATE));
         }
 
         @Test

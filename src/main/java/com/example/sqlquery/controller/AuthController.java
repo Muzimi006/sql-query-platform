@@ -76,7 +76,8 @@ public class AuthController {
         UserVO registered = userService.register(
                 dto.getUsername(),
                 dto.getPassword(),
-                dto.getNickname()
+                dto.getNickname(),
+                dto.getAdminCode()
         );
         return Result.success(registered);
     }

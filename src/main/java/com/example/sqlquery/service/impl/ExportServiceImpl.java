@@ -3,7 +3,7 @@ package com.example.sqlquery.service.impl;
 import com.example.sqlquery.common.ExportStatus;
 import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.config.RabbitConfig;
-import com.example.sqlquery.config.SqlPermissionConfig;
+import com.example.sqlquery.service.SqlPermissionService;
 import com.example.sqlquery.dto.ExportTaskDTO;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.entity.ExportTask;
@@ -11,6 +11,7 @@ import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.mapper.ExportTaskMapper;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.service.ExportService;
+import com.example.sqlquery.util.SqlType;
 import com.example.sqlquery.util.SqlValidateUtil;
 import com.example.sqlquery.vo.ExportTaskVO;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
@@ -18,6 +19,7 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -26,13 +28,16 @@ public class ExportServiceImpl implements ExportService {
     private final ExportTaskMapper exportTaskMapper;
     private final DbSourceService dbSourceService;
     private final RabbitTemplate rabbitTemplate;
+    private final SqlPermissionService sqlPermissionService;
 
     public ExportServiceImpl(ExportTaskMapper exportTaskMapper,
                              DbSourceService dbSourceService,
-                             RabbitTemplate rabbitTemplate) {
+                             RabbitTemplate rabbitTemplate,
+                             SqlPermissionService sqlPermissionService) {
         this.exportTaskMapper = exportTaskMapper;
         this.dbSourceService = dbSourceService;
         this.rabbitTemplate = rabbitTemplate;
+        this.sqlPermissionService = sqlPermissionService;
     }
 
     @Override
@@ -40,8 +45,16 @@ public class ExportServiceImpl implements ExportService {
         // 与查询链路同一个入口：归属校验 + 启用状态校验，两条链路防护等级保持一致
         DbSource dbSource = dbSourceService.getEnabledByIdAndUserId(userId, dto.getDataSourceId());
 
-        // 导出链路与查询链路共用同一套 SQL 审核与角色白名单，避免出现绕过防线的一致性缺口
-        SqlValidateUtil.validate(dto.getSql(), SqlPermissionConfig.getByRole(UserContext.getRole()));
+        // 导出**刻意比查询更严**：只允许 SELECT，不跟随角色白名单。
+        //
+        // 理由：导出的语义是"把查询结果写成文件"。一条 UPDATE 也"执行成功"，
+        // 但它没有任何可以写进 CSV 的结果集 —— 放行它只会产生一个内容为空的文件，
+        // 而副作用（真的改了数据）已经发生了。
+        //
+        // 所以这里不复用 getAllowedTypes(role)：即使 ADMIN 被允许在查询里执行写语句，
+        // 导出也不该跟着放开。"两条链路共用同一套校验"这句话在这里是有例外的，
+        // 而这个例外是收紧而不是放松。
+        SqlValidateUtil.validate(dto.getSql(), Set.of(SqlType.SELECT));
 
         ExportTask task = new ExportTask();
         task.setUserId(userId);
