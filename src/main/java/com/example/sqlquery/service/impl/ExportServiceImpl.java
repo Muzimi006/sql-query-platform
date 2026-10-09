@@ -1,5 +1,6 @@
 package com.example.sqlquery.service.impl;
 
+import com.example.sqlquery.common.ExportStatus;
 import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.config.RabbitConfig;
 import com.example.sqlquery.config.SqlPermissionConfig;
@@ -12,6 +13,7 @@ import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.service.ExportService;
 import com.example.sqlquery.util.SqlValidateUtil;
 import com.example.sqlquery.vo.ExportTaskVO;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
 
@@ -45,10 +47,14 @@ public class ExportServiceImpl implements ExportService {
         task.setUserId(userId);
         task.setDataSourceId(dto.getDataSourceId());
         task.setSqlText(dto.getSql());
-        task.setStatus("PENDING");
+        task.setStatus(ExportStatus.PENDING);
         exportTaskMapper.insert(task);
 
-        rabbitTemplate.convertAndSend(RabbitConfig.EXPORT_QUEUE, task.getId());
+        // 带上 CorrelationData：开启 publisher confirm 后，Broker 的确认/否定
+        // 是通过这个对象的 id 回调回来的。不带的话只知道"有一条消息没送到"，
+        // 却不知道该把哪条任务标记成失败（见 RabbitConfirmConfig）。
+        rabbitTemplate.convertAndSend(RabbitConfig.EXPORT_QUEUE, task.getId(),
+                new CorrelationData(String.valueOf(task.getId())));
 
         return toVO(task);
     }
@@ -68,7 +74,7 @@ public class ExportServiceImpl implements ExportService {
         if (task == null || !task.getUserId().equals(userId)) {
             throw new BusinessException("导出任务不存在");
         }
-        if (!"SUCCESS".equals(task.getStatus())) {
+        if (!ExportStatus.SUCCESS.equals(task.getStatus())) {
             throw new BusinessException("导出任务未完成");
         }
         if (task.getFilePath() == null) {
@@ -87,7 +93,7 @@ public class ExportServiceImpl implements ExportService {
         vo.setSqlText(task.getSqlText());
         vo.setStatus(task.getStatus());
         // 只下发「能不能下载」，不下发服务器路径
-        vo.setDownloadable("SUCCESS".equals(task.getStatus()) && task.getFilePath() != null);
+        vo.setDownloadable(ExportStatus.SUCCESS.equals(task.getStatus()) && task.getFilePath() != null);
         vo.setRowCount(task.getRowCount());
         vo.setErrorMessage(task.getErrorMessage());
         vo.setCreatedAt(task.getCreatedAt());

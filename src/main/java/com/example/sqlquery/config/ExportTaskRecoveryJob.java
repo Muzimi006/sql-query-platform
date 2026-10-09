@@ -1,0 +1,121 @@
+package com.example.sqlquery.config;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.example.sqlquery.common.ExportStatus;
+import com.example.sqlquery.entity.ExportTask;
+import com.example.sqlquery.mapper.ExportTaskMapper;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+/**
+ * 导出任务的"没人管"状态补偿。
+ *
+ * <h2>它管的是两种卡死</h2>
+ *
+ * <p>导出是一条<b>跨了三个组件</b>的链路：数据库（任务记录）→ MQ（投递）→ 消费者（干活）。
+ * 每一段都有自己失败的方式，而失败的结果都是一个<b>不会自己变的状态</b>：
+ *
+ * <table border="1">
+ *   <caption>两种卡死</caption>
+ *   <tr><th>卡在</th><th>意味着</th><th>典型原因</th></tr>
+ *   <tr>
+ *     <td>{@link ExportStatus#PENDING}</td>
+ *     <td>消息根本没被消费到</td>
+ *     <td>Broker 否定确认、路由失败、RabbitMQ 当时不可用</td>
+ *   </tr>
+ *   <tr>
+ *     <td>{@link ExportStatus#RUNNING}</td>
+ *     <td>消费者拿了消息但没能把结果写回去</td>
+ *     <td>进程被 kill、连接池打满、写库时数据库不可用</td>
+ *   </tr>
+ * </table>
+ *
+ * <p>没有这个任务时，两条路都会让前端永远转圈，而且<b>没有任何东西会来纠正</b>：
+ * 重复投递被幂等检查挡掉（状态已经不是 PENDING），数据库里也不会自己变。
+ * 现实中这个坑是一次"导出等了 30 秒还是 RUNNING"暴露出来的。
+ *
+ * <h2>为什么标记成 FAILED，而不是自动重跑</h2>
+ *
+ * <p>重跑的前提是"跑两次和跑一次结果一样"。当前实现直接覆盖同一个文件名，
+ * 中途中断留下的半成品文件和重跑的结果<b>无法区分</b> ——
+ * 在没有这个保证之前自动重跑，有把错误文件当成结果交给用户的风险。
+ * 让用户重新发起一次导出成本很低，所以这里选择<b>明确失败</b>而不是<b>悄悄重试</b>。
+ *
+ * <p>要做到自动重跑，前置改动是：先把导出改成"写临时文件 → 写完整 → 原子改名"，
+ * 让"文件存在"本身就代表"内容是完整的"。
+ *
+ * <h2>已知的边界（显式说明，不是漏了）</h2>
+ *
+ * <p>PENDING 的超时判定用的是"创建时间超过阈值"。
+ * 如果队列里积压了大量任务、前面的任务跑得很慢，一个<b>正常排队中</b>的任务
+ * 也会被判为失败。当前任务量下这个阈值（默认 10 分钟）足够宽松；
+ * 真要做对，应该改成让消费者上报心跳而不是看创建时间。
+ */
+@Slf4j
+@Component
+public class ExportTaskRecoveryJob {
+
+    private final ExportTaskMapper exportTaskMapper;
+
+    /**
+     * 超过这个时长还停在 PENDING / RUNNING，就认定它已经卡死。
+     *
+     * <p>取值依据：单次导出的 SQL 有 30 秒执行超时（与查询链路一致），
+     * 加上写文件的时间，正常任务不可能超过 10 分钟。
+     * 定得比这更短会误伤一个正在跑的大导出，更长只会让用户多等。
+     */
+    @Value("${export.stuck-running-minutes:10}")
+    private int stuckRunningMinutes;
+
+    public ExportTaskRecoveryJob(ExportTaskMapper exportTaskMapper) {
+        this.exportTaskMapper = exportTaskMapper;
+    }
+
+    /** 默认每 5 分钟扫一次。 */
+    @Scheduled(cron = "${export.recovery-cron:0 */5 * * * ?}")
+    public void failStuckTasks() {
+        LocalDateTime deadline = LocalDateTime.now().minusMinutes(stuckRunningMinutes);
+
+        failStuck(ExportStatus.RUNNING, deadline,
+                "任务执行中断（进程重启或消费者异常），已由补偿任务标记为失败，请重新发起导出");
+        failStuck(ExportStatus.PENDING, deadline,
+                "任务未能投递到消息队列，已由补偿任务标记为失败，请重新发起导出");
+    }
+
+    /** 把处于 {@code stuckStatus} 且创建时间早于 {@code deadline} 的任务标记为失败。 */
+    private void failStuck(String stuckStatus, LocalDateTime deadline, String reason) {
+        List<ExportTask> stuck = exportTaskMapper.selectList(
+                new LambdaQueryWrapper<ExportTask>()
+                        .eq(ExportTask::getStatus, stuckStatus)
+                        .lt(ExportTask::getCreatedAt, deadline));
+
+        if (stuck.isEmpty()) {
+            return;
+        }
+
+        for (ExportTask task : stuck) {
+            // 条件更新加一道保险：只有<b>仍然</b>停在这个状态才改。
+            // 不用 updateById 是因为"查出来 → 改 → 写回"中间有时间窗，
+            // 任务可能已经被消费者正常完成了，那样会把 SUCCESS 覆盖成 FAILED。
+            int affected = exportTaskMapper.update(null, new LambdaUpdateWrapper<ExportTask>()
+                    .eq(ExportTask::getId, task.getId())
+                    .eq(ExportTask::getStatus, stuckStatus)
+                    .set(ExportTask::getStatus, ExportStatus.FAILED)
+                    .set(ExportTask::getErrorMessage, reason)
+                    .set(ExportTask::getFinishedAt, LocalDateTime.now()));
+
+            if (affected == 1) {
+                log.warn("导出任务长时间停留在 {}，已标记为失败。taskId={}, 超时阈值={}分钟",
+                        stuckStatus, task.getId(), stuckRunningMinutes);
+            } else {
+                log.info("导出任务在补偿时状态已变化（可能刚被完成），跳过。taskId={}", task.getId());
+            }
+        }
+    }
+}

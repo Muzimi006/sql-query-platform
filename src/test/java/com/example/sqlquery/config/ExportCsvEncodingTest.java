@@ -50,7 +50,9 @@ class ExportCsvEncodingTest {
         when(resultSet.getObject(1)).thenReturn("中文内容");
         when(resultSet.getObject(2)).thenReturn("带,逗号");
 
-        ExportConsumer consumer = new ExportConsumer(null, null, null, connectionManager);
+        // 构造参数里已经没有 AesUtil：它原先被注入进来却从头到尾没被用过
+        // （数据源密码的解密统一在 ConnectionManager 里做），属于无用依赖，已删除
+        ExportConsumer consumer = new ExportConsumer(null, null, connectionManager);
 
         File file = File.createTempFile("export-encoding-", ".csv");
         try {
