@@ -11,16 +11,83 @@ spring:
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USERNAME:guest}
     password: ${RABBITMQ_PASSWORD:guest}
+    # --- 可靠投递三件套，缺任何一个都等于没配 ---
+    # ① 让 Broker 对每条消息回确认；correlated 表示确认会带上 CorrelationData.id，
+    #    这样才能定位到"是哪条任务的消息没送到"
+    publisher-confirm-type: correlated
+    # ② 消息路由不到队列时退回给发送方，而不是静默丢弃
+    publisher-returns: true
+    template:
+      # ③ 与 ② 配套：mandatory 不打开时，路由失败的消息连退回的机会都没有
+      mandatory: true
+    listener:
+      simple:
+        # 手动 ack：自动 ack 在方法返回时就确认，等于"不管里面发生了什么，消息都算处理了"
+        acknowledge-mode: manual
+        # 每个消费者一次只取一条：导出是重 IO 任务，预取会把它全堆在一个消费者手里，
+        # 而其它消费者闲着 —— 也会让任务长时间停在 PENDING 被补偿任务误判
+        prefetch: 1
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
       connect-timeout: 1s
       timeout: 400ms
-# 导出文件的保留策略：超过保留天数的 CSV 会被定时任务删除，并把数据库里的路径置空
+# 监控端点
+management:
+  server:
+    # 监控端点单独一个端口，而且只监听本机 —— 这是一个安全决定，不是配置习惯。
+    # /actuator/** 里有 /env、/beans、/heapdump 这类能读到内部信息的端点，
+    # 与业务接口放在同一个端口、同一个监听地址上，等于把它们一起暴露出去。
+    # 需要跨机抓取时把 address 改成内网地址，并在前面放一层带鉴权的网关，
+    # 而不是把它直接挂到公网。
+    port: ${MANAGEMENT_PORT:8081}
+    address: 127.0.0.1
+  endpoints:
+    web:
+      exposure:
+        # 只开这四个。/env、/beans、/heapdump 之类默认就是关的，不要顺手打开
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      # 端口已经限制在本机，这里给出细节才能用于排障
+      show-details: always
+      group:
+        # 存活探针只看进程本身：进程还在跑就算活着
+        liveness:
+          include: ping
+        # 就绪探针只看平台自己的数据库。
+        # 刻意「不」包含 Redis / RabbitMQ：本项目的设计取向是
+        # Redis 挂掉时降级放行（见 RateLimitUtil / TokenBlacklistServiceImpl），
+        # 如果把 Redis 算进就绪探针，负载均衡会因为一个"可以降级"的依赖
+        # 把这个实例摘掉 —— 那等于把"降级可用"又变回了"不可用"。
+        readiness:
+          include: db
+
+redis:
+  # 数据源失效广播的订阅容器重试间隔。
+  # 订阅容器刻意没有自动启动（自动启动会在容器刷新阶段同步连 Redis，
+  # Redis 不可用时会把整个应用带崩，已实测），改由 RedisSubscriptionStarter
+  # 在应用就绪后启动，失败就按这个间隔重试。
+  subscriber-retry-ms: 30000
+
+query:
+  rate-limit:
+    # 单用户每分钟允许执行的查询条数。
+    # 原来写死 10 —— 实测会拦住正常使用（反复调试同一条 SQL 几十秒就会触顶），
+    # 安全措施反而变成了功能故障。改成可配，默认放宽到 60。
+    max-requests: 60
+    window-seconds: 60
+
+# 导出相关策略
 export:
+  # 超过保留天数的 CSV 会被定时任务删除，并把数据库里的路径置空
   file-retention-days: 7
   clean-cron: "0 0 3 * * ?"
+  # 超过这个时长还停在 PENDING / RUNNING 的任务会被补偿任务标记为失败。
+  # 卡的判定依据：单次导出的 SQL 超时是 30 秒，正常任务不可能超过 10 分钟
+  stuck-running-minutes: 10
+  recovery-cron: "0 */5 * * * ?"
 jwt:
   
   secret: ${JWT_SECRET}

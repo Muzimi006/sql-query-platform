@@ -1,5 +1,5 @@
-version: '3.8'
-
+# 不再写 version：Compose V2 已经忽略顶层 version 字段，保留它只会在每次
+# docker compose 命令上打印一条 "the attribute version is obsolete" 告警。
 services:
   mysql:
     image: mysql:8.0

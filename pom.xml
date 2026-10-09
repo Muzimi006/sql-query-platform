@@ -15,6 +15,12 @@
 	<description>基于 Spring Boot 的在线 SQL 查询与审核平台</description>
 	<properties>
 		<java.version>17</java.version>
+		<!-- 需要 MySQL / Redis / RabbitMQ 的用例统一打 integration 标签，默认排除。
+		     写成属性（而不是把值直接写在插件里）是必须的：POM 里显式配置的插件参数
+		     优先级高于命令行 -D 属性，硬编码后 README 里的
+		     mvn test -Dgroups=integration 会被静默跳过，一条用例都不跑却显示 BUILD SUCCESS。
+		     本地想跑集成测试：mvn test -Dgroups=integration -Dsurefire.excludedGroups= -->
+		<surefire.excludedGroups>integration</surefire.excludedGroups>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -72,10 +78,19 @@
 			<artifactId>java-jwt</artifactId>
 			<version>4.4.0</version>
 		</dependency>
+		<!-- jsqlparser 的版本必须 >= MyBatis-Plus 声明的版本，这里锁 4.9。
+		     MyBatis-Plus 3.5.6 的 mybatis-plus-core.pom 依赖的就是 4.9，
+		     而 PaginationInnerInterceptor 的字节码里直接 new 了
+		     net.sf.jsqlparser.statement.select.SelectItem。
+		     该类型在 4.2/4.4/4.6 里是 interface、从 4.9 起才是 class ——
+		     把版本压到 4.6 会让分页插件在实例化时抛
+		     java.lang.InstantiationError: ...SelectItem，整个应用起不来。
+		     这个失败只在"真的用了 PaginationInnerInterceptor"时才暴露，
+		     所以曾经表现为"分页插件一加就崩"，而不是编译错误。 -->
 		<dependency>
 			<groupId>com.github.jsqlparser</groupId>
 			<artifactId>jsqlparser</artifactId>
-			<version>4.6</version>
+			<version>4.9</version>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -106,6 +121,18 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-data-redis</artifactId>
 		</dependency>
+
+		<!-- 监控与指标。starter-actuator 负责暴露 /actuator/**，
+		     micrometer-registry-prometheus 提供 /actuator/prometheus 这个抓取端点。
+		     两个都要：只有 actuator 的话能看到指标名，但拿不到 Prometheus 格式的文本。 -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.micrometer</groupId>
+			<artifactId>micrometer-registry-prometheus</artifactId>
+		</dependency>
 	</dependencies>
 
 	<build>
@@ -118,9 +145,9 @@
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-surefire-plugin</artifactId>
 				<configuration>
-					<!-- 需要 MySQL / Redis / RabbitMQ 的用例打了 integration 标签，默认不执行。
-					     本地起好中间件后用 mvn test -Dgroups=integration 单独跑。 -->
-					<excludedGroups>integration</excludedGroups>
+					<!-- 默认值来自 properties 里的 surefire.excludedGroups。
+					     本地起好中间件后：mvn test -Dgroups=integration -Dsurefire.excludedGroups= -->
+					<excludedGroups>${surefire.excludedGroups}</excludedGroups>
 				</configuration>
 			</plugin>
 			<plugin>
