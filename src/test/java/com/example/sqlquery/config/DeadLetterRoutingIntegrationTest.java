@@ -60,7 +60,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
         // 本用例自己制造死信，不希望真消费者把消息抢走
         "spring.rabbitmq.listener.simple.auto-startup=false",
         // 关掉 DLQ 巡检定时任务，避免测试期间刷 ERROR 日志
-        "mq.dlq-check-cron=-"
+        "mq.dlq-check-cron=-",
+        // 深度快照的刷新间隔压到 300ms：生产默认 15s，测试里等不起
+        "mq.dlq-depth-refresh-ms=300"
 })
 class DeadLetterRoutingIntegrationTest {
 
@@ -158,9 +160,18 @@ class DeadLetterRoutingIntegrationTest {
 
         assertNotNull(gauge, "没有找到 " + SqlPlatformMetrics.QUEUE_DEPTH
                 + "{queue=" + RabbitConfig.EXPORT_DLQ + "}，DlqDepthMonitor 没注册上");
+
+        // ⚠️ 指标读的是**定时刷新的快照**，不是抓取时现查 Broker（见 DlqDepthMonitor 的类注释）。
+        //    所以这里要等一个刷新周期，不能立刻读 —— 刷新间隔在本用例里压到了 300ms。
+        long deadline = System.currentTimeMillis() + TIMEOUT.toMillis();
+        while (gauge.value() < 1 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(POLL_INTERVAL_MS);
+        }
+
         assertTrue(gauge.value() >= 1,
                 "死信队列里已经有消息了，指标却还是 " + gauge.value()
-                        + " —— 多半是 DlqDepthMonitor 里的队列名写错了（异常被吞成 0）");
+                        + " —— 要么是 DlqDepthMonitor 里的队列名写错了（读失败被记成一次计数），"
+                        + "要么是刷新任务没跑（mq.dlq-depth-refresh-ms 被配成了 - 或负数）");
     }
 
     @Test

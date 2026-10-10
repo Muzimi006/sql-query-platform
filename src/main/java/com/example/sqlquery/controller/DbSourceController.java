@@ -6,7 +6,10 @@ import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.dialect.SqlDialect;
 import com.example.sqlquery.dto.DbSourceDTO;
 
+import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.service.DbSourceService;
+import com.example.sqlquery.util.RateLimitUtil;
+import org.springframework.beans.factory.annotation.Value;
 
 import com.example.sqlquery.vo.DbSourceVO;
 import com.baomidou.mybatisplus.core.metadata.IPage;
@@ -27,11 +30,25 @@ import java.util.List;
 public class DbSourceController {
 
     private final DbSourceService dbSourceService;
+    private final RateLimitUtil rateLimitUtil;
+
+    /**
+     * 测试连接的限流：**这个接口以前完全没有限流，而它是"让服务器去连任意 host:port"**。
+     *
+     * <p>一次调用最多占一个 Tomcat 线程 5 秒（JdbcUrlUtil 的 connectTimeout），
+     * 不需要高并发就能把线程池慢慢吃掉；而且它天然是一个端口探测面。
+     * <b>能连出去的接口，一定要有次数上限。</b>
+     */
+    @Value("${datasource.test-connection.rate-limit.max-requests:10}")
+    private int testConnectionMaxRequests;
+
+    @Value("${datasource.test-connection.rate-limit.window-seconds:60}")
+    private int testConnectionWindowSeconds;
 
 
-    public DbSourceController(DbSourceService dbSourceService) {
+    public DbSourceController(DbSourceService dbSourceService, RateLimitUtil rateLimitUtil) {
         this.dbSourceService = dbSourceService;
-
+        this.rateLimitUtil = rateLimitUtil;
     }
 
     @PostMapping
@@ -87,6 +104,12 @@ public class DbSourceController {
 
     @PostMapping("/test")
     public Result<Boolean> test(@Valid @RequestBody DbSourceDTO dto) {
+        // 按用户分桶：拦的是"一个人反复拿服务器去探端口"，不是全平台总量
+        String key = "rate:datasource-test:" + UserContext.get();
+        if (!rateLimitUtil.tryAcquireSlidingWindow(
+                key, testConnectionMaxRequests, testConnectionWindowSeconds, "datasource-test")) {
+            throw new BusinessException("操作太频繁，请稍后再试");
+        }
         boolean ok = dbSourceService.testConnection(dto);
         return Result.success(ok);
     }

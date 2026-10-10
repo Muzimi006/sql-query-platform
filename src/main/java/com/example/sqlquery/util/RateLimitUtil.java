@@ -20,6 +20,11 @@ import java.util.UUID;
  *
  * <p>这个取舍是有代价的，必须说清楚：<b>Redis 不可用期间限流形同虚设</b>。
  * 真要在大流量下守住，靠的是网关层的限流，而不是业务进程里的这一段。
+ *
+ * <p>每次调用都要传一个 {@code scope}：全平台有七处限流（登录按 IP、登录按账号、
+ * 注册、查询执行、工单提交、NL2SQL、测试连接）共用同一个计数器，
+ * <b>没有这个标签就只能看到"有人在被限流"，看不到是哪一道被限流</b>——
+ * 而需要采取的动作（调哪个阈值、是不是被攻击）恰恰取决于这个区别。
  */
 @Slf4j
 @Component
@@ -73,18 +78,26 @@ public class RateLimitUtil {
         this.metrics = metrics;
     }
 
-    /** 固定窗口限流：单位时间内的请求数上限。Redis 不可用时放行。 */
-    public boolean tryAcquire(String key, int limit, int seconds) {
+    /**
+     * 固定窗口限流：单位时间内的请求数上限。Redis 不可用时放行。
+     *
+     * @param scope 哪一道限流，作为指标标签。取值必须是<b>固定常量</b>，不是 key
+     */
+    public boolean tryAcquire(String key, int limit, int seconds, String scope) {
         return acquireQuietly(() -> redisTemplate.execute(
                 FIXED_WINDOW_SCRIPT,
                 Collections.singletonList(key),
                 String.valueOf(limit),
                 String.valueOf(Duration.ofSeconds(seconds).toMillis())
-        ), key);
+        ), key, scope);
     }
 
-    /** 滑动窗口限流：任意长度为 seconds 的时间窗内请求数不超过 limit。Redis 不可用时放行。 */
-    public boolean tryAcquireSlidingWindow(String key, int limit, int seconds) {
+    /**
+     * 滑动窗口限流：任意长度为 seconds 的时间窗内请求数不超过 limit。Redis 不可用时放行。
+     *
+     * @param scope 哪一道限流，作为指标标签；见 {@link #tryAcquire} 的说明
+     */
+    public boolean tryAcquireSlidingWindow(String key, int limit, int seconds, String scope) {
         long now = System.currentTimeMillis();
         return acquireQuietly(() -> redisTemplate.execute(
                 SLIDING_WINDOW_SCRIPT,
@@ -93,7 +106,7 @@ public class RateLimitUtil {
                 String.valueOf(Duration.ofSeconds(seconds).toMillis()),
                 String.valueOf(limit),
                 now + "-" + UUID.randomUUID()
-        ), key);
+        ), key, scope);
     }
 
     /**
@@ -102,7 +115,8 @@ public class RateLimitUtil {
      * <p>收敛的意义：散落各处时，保护措施一定会不一致 —— 有的地方吞了异常放行、
      * 有的地方直接把异常抛给用户，行为随调用点变化。
      */
-    private boolean acquireQuietly(java.util.function.Supplier<Long> redisCall, String key) {
+    private boolean acquireQuietly(java.util.function.Supplier<Long> redisCall, String key,
+                                   String scope) {
         boolean allowed;
         try {
             allowed = Long.valueOf(1L).equals(redisCall.get());
@@ -125,7 +139,10 @@ public class RateLimitUtil {
             // 被限流是"系统按预期工作"，不是错误，所以只记指标、不打日志 ——
             // 打日志的话，一次正常的限流会在日志里刷出大量 ERROR/WARN，
             // 把真正的故障淹掉。要看触发频率就查这个计数器。
-            metrics.recordRateLimited();
+            //
+            // ⚠️ 必须带上 scope：七道限流共用一个计数器，不带标签的话
+            // "登录被刷"和"导出被刷"是同一个数字 —— 看到它在涨也不知道该去改哪个阈值。
+            metrics.recordRateLimited(scope);
         }
         return allowed;
     }

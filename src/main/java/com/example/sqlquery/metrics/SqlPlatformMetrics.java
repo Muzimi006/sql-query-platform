@@ -40,7 +40,7 @@ import java.util.function.ToDoubleFunction;
  *   <tr><td>慢查询</td><td>{@code sql.query.duration}（带 P50/P95/P99）</td></tr>
  *   <tr><td>连接池水位</td><td>{@code datasource.pool.connections.*}（每个业务数据源一组）</td></tr>
  *   <tr><td>缓存命中率</td><td>{@code datasource.cache.hit} / {@code .miss}</td></tr>
- *   <tr><td>限流触发次数</td><td>{@code sql.query.rate_limited}</td></tr>
+ *   <tr><td>限流触发次数</td><td>{@code sql.query.rate_limited}（带 scope 标签）</td></tr>
  * </table>
  */
 @Slf4j
@@ -53,7 +53,13 @@ public class SqlPlatformMetrics {
     /** 结果被截断的次数（超过单次返回上限）。 */
     public static final String QUERY_TRUNCATED = "sql.query.truncated";
 
-    /** 被执行次数上限拦下的次数。 */
+    /**
+     * 被<b>频率</b>限流拦下的次数，用 {@code scope} 标签区分是哪一道限流。
+     *
+     * <p>⚠️ 名字里的 {@code query} 是历史遗留：它最初只统计"查询执行"，
+     * 现在登录、注册、工单提交、NL2SQL、测试连接也往这里记。
+     * 保留旧名字是为了不打断已有的看板与告警规则，<b>要区分就看 scope</b>。
+     */
     public static final String QUERY_RATE_LIMITED = "sql.query.rate_limited";
 
     /**
@@ -106,6 +112,15 @@ public class SqlPlatformMetrics {
 
     private static final String TAG_REASON = "reason";
 
+    /**
+     * 限流作用域标签。
+     *
+     * <p>⚠️ 取值只能来自固定的几个常量，<b>绝不能把限流 key 拼进去</b>：
+     * key 里有 userId、IP、用户名，那样每来一个用户就多一条时间线 ——
+     * 指标基数随用户数增长，是 Prometheus 最常见的自伤方式。
+     */
+    private static final String TAG_SCOPE = "scope";
+
     /** 同一个降级原因，最短多久打一条日志。 */
     private static final long DEGRADATION_LOG_INTERVAL_MS = 30_000;
 
@@ -122,7 +137,6 @@ public class SqlPlatformMetrics {
     private final MeterRegistry registry;
 
     private final Counter queryTruncated;
-    private final Counter queryRateLimited;
     private final Counter cacheHit;
     private final Counter cacheMiss;
 
@@ -141,10 +155,6 @@ public class SqlPlatformMetrics {
 
         this.queryTruncated = Counter.builder(QUERY_TRUNCATED)
                 .description("结果集超过单次返回上限而被截断的次数")
-                .register(registry);
-
-        this.queryRateLimited = Counter.builder(QUERY_RATE_LIMITED)
-                .description("被单用户执行频率上限拦下的次数")
                 .register(registry);
 
         this.cacheHit = Counter.builder(CACHE_HIT)
@@ -184,8 +194,80 @@ public class SqlPlatformMetrics {
         queryTruncated.increment();
     }
 
-    public void recordRateLimited() {
-        queryRateLimited.increment();
+    /**
+     * 记录一次被频率限流拦下。
+     *
+     * @param scope 哪一道限流，取值固定：{@code login-ip} / {@code login-account} /
+     *              {@code register-ip} / {@code query} / {@code sql-review} /
+     *              {@code nl2sql} / {@code datasource-test}
+     */
+    public void recordRateLimited(String scope) {
+        registry.counter(QUERY_RATE_LIMITED, TAG_SCOPE, scope).increment();
+    }
+
+    /**
+     * 死信队列深度<b>读取失败</b>的次数，按队列分标签。
+     *
+     * <p>补的是原先的一个有损之处：以前读不到和"队列是空的"都被合并成 0，
+     * 于是 Broker 挂掉时指标上看起来"一切正常"。现在读失败会额外记一个计数，
+     * 配合 {@link #QUEUE_DEPTH_AGE}（新鲜度）就能把"读不到"和"是 0"分开。
+     */
+    public static final String DLQ_READ_FAILED = "mq.dlq.read_failed";
+
+    public void recordDlqDepthReadFailed(String queueName) {
+        registry.counter(DLQ_READ_FAILED, "queue", queueName).increment();
+    }
+
+    /**
+     * 队列深度指标的<b>新鲜度</b>：距离上一次成功读取过去了多少秒。
+     *
+     * <p>为什么必须单独有一个指标：深度改成缓存之后，"深度是 0"就有了两种解释 ——
+     * 队列真的空了，或者<b>根本读不到</b>。age 超过刷新间隔就说明是后者。
+     */
+    public static final String QUEUE_DEPTH_AGE = "mq.queue.depth.age_seconds";
+
+    public void registerQueueDepthAgeGauge(String queueName,
+                                           java.util.function.Supplier<Number> ageSupplier) {
+        Gauge.builder(QUEUE_DEPTH_AGE, ageSupplier, supplier -> supplier.get().doubleValue())
+                .description("距上次成功读取队列深度的秒数（超过刷新间隔 = 读数已失效）")
+                .tag("queue", queueName)
+                .strongReference(true)
+                .register(registry);
+    }
+
+    /**
+     * Redis 失效广播订阅是否活着：1 = 已订阅且容器在跑，0 = 没订阅或已停。
+     *
+     * <p>这个 Gauge 存在的理由：订阅失败/掉线以前<b>只在启动日志里说一次</b>，
+     * 之后完全不可见。多实例部署时表现为"改了数据源，另一台机器上的池子还是旧的"，
+     * 而这条线上没有任何一个数字在变化。
+     */
+    public static final String REDIS_SUBSCRIBER_UP = "redis.subscriber.up";
+
+    public void registerRedisSubscriberUpGauge(java.util.function.Supplier<Number> upSupplier) {
+        Gauge.builder(REDIS_SUBSCRIBER_UP, upSupplier, supplier -> supplier.get().doubleValue())
+                .description("Redis 失效广播订阅是否在线（1 在线 / 0 离线）")
+                .strongReference(true)
+                .register(registry);
+    }
+
+    /** Redis 订阅被看门狗发现掉线并重启的次数。长期为 0 才是正常的。 */
+    public static final String REDIS_SUBSCRIBER_RESTART = "redis.subscriber.restart";
+
+    public void recordRedisSubscriberRestart() {
+        registry.counter(REDIS_SUBSCRIBER_RESTART).increment();
+    }
+
+    /**
+     * 被 NL2SQL 的并发上限拦下的次数。
+     *
+     * <p>⚠️ 它和 {@code scope=nl2sql} 的限流是两件事：那个是"你一分钟点了太多次"，
+     * 这个是"同时在跑的生成任务已经占满了"。后者说明<b>该扩线程或该排队</b>了。
+     */
+    public static final String NL2SQL_REJECTED = "sql.nl2sql.rejected";
+
+    public void recordNl2sqlRejected() {
+        registry.counter(NL2SQL_REJECTED).increment();
     }
 
     /**
@@ -203,13 +285,14 @@ public class SqlPlatformMetrics {
     /**
      * 把一个队列的深度注册成 Gauge。
      *
-     * <p>⚠️ 用 <b>Gauge + Supplier</b> 而不是"定时任务读一次再写进计数器"：
-     * Gauge 的值是<b>抓取时才算</b>的，反映的是"此刻队列里有多少条"；
-     * 定时任务会把读数变成"上一次任务运行时有多少条"，中间的变化全丢了。
+     * <p>⚠️ Supplier 里<b>绝不能抛异常</b>，也<b>绝不能阻塞</b> —— 它是在 Prometheus 抓取线程上执行的。
+     * Broker 挂掉时让 Gauge 抛出去，会让整个 {@code /actuator/prometheus} 抓取失败：
+     * 从"少一个指标"变成"所有指标都没了"，而且是在最需要指标的时候。
      *
-     * <p>Supplier 里<b>绝不能抛异常</b> —— Broker 挂掉时让 Gauge 抛出去，
-     * 会让整个 `/actuator/prometheus` 抓取失败：从"少一个指标"变成"所有指标都没了"，
-     * 而且是在最需要指标的时候。
+     * <p><b>所以这里传进来的 Supplier 必须是"读一个缓存快照"，不许直接发 AMQP 请求</b>：
+     * 早先的实现是抓取时现查 Broker，Broker 不可达时每次抓取都要等应答超时（2 个队列 × N 秒），
+     * Prometheus 会直接把抓取判成超时 —— 于是故障期间恰好丢掉了全部指标。
+     * 快照由 {@code DlqDepthMonitor} 的定时刷新维护，新鲜度看 {@link #QUEUE_DEPTH_AGE}。
      */
     public void registerQueueDepthGauge(String queueName, java.util.function.Supplier<Number> depthSupplier) {
         Gauge.builder(QUEUE_DEPTH, depthSupplier, supplier -> supplier.get().doubleValue())
@@ -364,6 +447,34 @@ public class SqlPlatformMetrics {
 
     public void recordPoolRebuiltOnConfigChange() {
         registry.counter(POOL_REBUILT_ON_CONFIG_CHANGE).increment();
+    }
+
+    /**
+     * **在途任务的消息被重投、又被幂等保护 ack 掉**的次数，按链路分标签。
+     *
+     * <p>听起来像"重复投递被正确挡住了"，其实是 <b>一次真实的消息丢弃</b>：
+     * 进程在任务执行到一半时被 kill（或滚动发布），Broker 重投，
+     * 而重投时状态已经不是 PENDING/APPROVED 了 → 认领失败 → <b>消息被 ack 掉</b>，
+     * 任务只能等补偿任务判失败（导出 10 分钟 / 工单 15 分钟）。
+     *
+     * <p>它持续大于 0 说明**这个服务在非正常停机**（kill -9 / OOM / 滚动发布没等优雅停机）。
+     */
+    public static final String REDELIVERY_SKIPPED_IN_FLIGHT = "mq.redelivery.inflight";
+
+    public void recordRedeliverySkippedInFlight(String link) {
+        registry.counter(REDELIVERY_SKIPPED_IN_FLIGHT, TAG_LINK, link).increment();
+    }
+
+    /**
+     * 熔断器**恢复**的次数。
+     *
+     * <p>补它的理由很直接：{@code datasource.circuit.opened} 是单调递增的，
+     * 只有 opened 没有 recovered 的话，看板上分不清"已经恢复了"和"还在熔断中"。
+     */
+    public static final String CIRCUIT_RECOVERED = "datasource.circuit.recovered";
+
+    public void recordCircuitRecovered() {
+        registry.counter(CIRCUIT_RECOVERED).increment();
     }
 
     /** "系统异常"（全局兜底）的次数。 */

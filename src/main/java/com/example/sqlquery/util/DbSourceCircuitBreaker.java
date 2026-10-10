@@ -125,6 +125,8 @@ public class DbSourceCircuitBreaker {
         }
         synchronized (breaker) {
             if (breaker.state == State.HALF_OPEN) {
+                // 计数：只有 opened 没有 recovered 的话，看板上分不清"已恢复"和"还在熔断中"
+                metrics.recordCircuitRecovered();
                 log.info("数据源探测成功，熔断器恢复。dataSourceId={}", dataSourceId);
                 breaker.state = State.CLOSED;
                 breaker.consecutiveFailures = 0;

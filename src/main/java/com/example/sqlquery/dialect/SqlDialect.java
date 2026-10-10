@@ -238,6 +238,27 @@ public enum SqlDialect {
      * @param connectTimeoutMs 统一的建连超时（毫秒）；各方言自行换算成自己的单位
      */
     public String connectionParams(int connectTimeoutMs) {
+        return connectionParams(connectTimeoutMs, DEFAULT_SERVER_TIMEZONE);
+    }
+
+    /**
+     * MySQL 驱动的 {@code serverTimezone} 默认值。
+     *
+     * <p>它决定驱动把库里的 {@code TIMESTAMP/DATETIME} 当**哪个时区**来解释。
+     * 写死成 {@code Asia/Shanghai} 对国内部署是对的，但对接一个 UTC 的库时
+     * <b>每个时间字段都会整体偏 8 小时</b> —— 而且不会报任何错。
+     * 所以它可配（{@code datasource.mysql.server-timezone}），这里只是默认值。
+     */
+    public static final String DEFAULT_SERVER_TIMEZONE = "Asia/Shanghai";
+
+    /**
+     * 连接参数（可指定 MySQL 时区）。
+     *
+     * @param connectTimeoutMs 建连超时（毫秒）
+     * @param serverTimezone   MySQL 侧时区；PostgreSQL 不使用这个参数（PG 由服务端
+     *                         的 {@code TimeZone} 决定，连接串里没有对应开关）
+     */
+    public String connectionParams(int connectTimeoutMs, String serverTimezone) {
         return switch (this) {
             // ⚠️ socketTimeout 不能省：MySQL 驱动默认 0 = 永不超时。
             //    业务库 TCP 可达但不再响应时，查询会永久阻塞 —— 而这个池子只有 5 条连接，
@@ -245,7 +266,7 @@ public enum SqlDialect {
             //    60000 给得比 setQueryTimeout(30/300s) 宽松，正常慢查询不会误杀，
             //    它兜的是"连接层面已经死了"那种情况。
             case MYSQL -> "?useSSL=false"
-                    + "&serverTimezone=Asia/Shanghai"
+                    + "&serverTimezone=" + serverTimezone
                     + "&allowPublicKeyRetrieval=true"
                     + "&connectTimeout=" + connectTimeoutMs
                     + "&socketTimeout=60000";

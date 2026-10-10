@@ -55,7 +55,7 @@ public class QueryController {
         Long userId= UserContext.get();
         // 按用户分桶：限流的是"某个人刷得太快"，不是"整个平台的总量"
         String key = "rate:query:" + userId;
-        if (!rateLimitUtil.tryAcquireSlidingWindow(key, maxRequests, windowSeconds)) {
+        if (!rateLimitUtil.tryAcquireSlidingWindow(key, maxRequests, windowSeconds, "query")) {
             throw new BusinessException("操作太频繁，请稍后再试");
         }
         return Result.success(queryService.execute(userId,dto));

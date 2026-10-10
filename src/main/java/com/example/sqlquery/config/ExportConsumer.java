@@ -194,7 +194,13 @@ public class ExportConsumer {
             try {
                 if (!claimed) {
                     if (!tryClaim(taskId)) {
-                        log.info("导出任务已被认领或已完成，跳过本次投递（幂等保护）。taskId={}", taskId);
+                        // ⚠️ 认领失败有**两种**完全不同的情况，日志级别必须分开：
+                        //    ① 任务已经成功/失败 → 正常的幂等跳过，INFO；
+                        //    ② 任务停在 RUNNING → 说明**上一轮投递还在跑**（进程被 kill/滚动发布时最典型）：
+                        //       消息没被 ack，Broker 重投，而重投时状态已经不是 PENDING 了。
+                        //       这时我们 ack 掉它 —— 任务只能等补偿任务判失败（默认 10 分钟）。
+                        //       这是**真实的一次"消息被静默丢弃"**，必须留下痕迹。
+                        warnIfRedeliveredInFlight(taskId);
                         channel.basicAck(deliveryTag, false);
                         return;
                     }
@@ -248,6 +254,32 @@ public class ExportConsumer {
     }
 
     /**
+     * 认领失败时判断"是不是一次在途任务的重投"，是就告警 + 计数。
+     *
+     * <p>为什么要专门做这件事：这条路径以前只有一条 INFO 日志（"已被认领或已完成"），
+     * 而它其实是**消息被静默 ack 丢弃**的地方 ——
+     * 进程在任务执行到一半时被 kill，Broker 重投，重投时状态已是 RUNNING，
+     * 于是消息被 ack 掉、任务只能交给补偿任务收尸。
+     * <b>停机会造成"消息被丢弃"，但以前没有任何信号。</b>
+     */
+    private void warnIfRedeliveredInFlight(Long taskId) {
+        try {
+            ExportTask current = exportTaskMapper.selectById(taskId);
+            if (current != null && ExportStatus.RUNNING.equals(current.getStatus())) {
+                metrics.recordRedeliverySkippedInFlight(SqlPlatformMetrics.LINK_EXPORT);
+                log.warn("消息被重投，但任务仍在 RUNNING —— 上一轮投递可能还在执行"
+                                + "（进程被 kill / 滚动发布）。本次投递已 ack，任务由补偿任务兜底。"
+                                + "taskId={}, startedAt={}", taskId, current.getStartedAt());
+                return;
+            }
+            log.info("导出任务已被认领或已完成，跳过本次投递（幂等保护）。taskId={}", taskId);
+        } catch (Exception e) {
+            // 查状态失败不该影响 ack —— 这条路径本来就是"什么都不做"
+            log.info("导出任务已被认领或已完成，跳过本次投递（幂等保护）。taskId={}", taskId);
+        }
+    }
+
+    /**
      * 原子认领：只有当任务确实是 {@link ExportStatus#PENDING} 时才置为 RUNNING。
      *
      * <p>返回 {@code false} 的所有情况都表示"本次投递不该做任何事"：
@@ -283,7 +315,9 @@ public class ExportConsumer {
         File file = null;
         try {
             // 消费者线程里没有 UserContext（不是 Web 线程），owner 从任务记录里取
-            DbSource dbSource = dbSourceService.getByIdAndUserId(
+            // ⚠️ 用 getEnabledByIdAndUserId（要求启用），和工单链路一致：
+            //    "停用"必须对**所有**链路生效 —— 一条排了很久队的导出任务也是一次真实的数据访问
+            DbSource dbSource = dbSourceService.getEnabledByIdAndUserId(
                     task.getUserId(), task.getDataSourceId());
 
             File exportDir = new File("exports");
@@ -293,14 +327,27 @@ public class ExportConsumer {
 
             file = new File(exportDir, taskId + ".csv");
 
-            long rowCount = generateCsv(dbSource, task.getSqlText(), file);
+            // ⭐ **先写临时文件，成功后再原子改名。**
+            //
+            // 为什么：直接往最终文件名里写，进程在写一半时被 kill -9，
+            // 磁盘上就留下一个**内容不完整、而数据库里又没有它路径**的文件 ——
+            // 清理任务只扫 `file_path IS NOT NULL` 的行，**永远看不到它**，
+            // 于是这类垃圾随事故次数无限累积，直到磁盘满（而磁盘满影响整台机器）。
+            //
+            // 改成先写 .tmp 之后：崩溃留下的必定是 .tmp，而 .tmp 由清理任务统一兜底；
+            // 最终文件名一旦出现，内容就一定是完整的。
+            File tmp = new File(exportDir, taskId + ".csv.tmp");
+
+            long rowCount = generateCsv(dbSource, task.getSqlText(), tmp);
+
+            moveAtomically(tmp, file);
 
             finish(taskId, ExportStatus.SUCCESS, file.getPath(), rowCount, null);
         } catch (Exception e) {
             log.error("导出任务执行失败。taskId={}", taskId, e);
 
-            // 失败时把写了一半的 CSV 删掉：留下一个内容不完整的文件、
-            // 而数据库里又没有它的路径，磁盘上就会慢慢堆一批没人认领的垃圾
+            // 失败时把写了一半的临时文件删掉（最终文件此刻还不存在）
+            deleteQuietly(new File("exports", taskId + ".csv.tmp"));
             if (file != null && file.exists() && !file.delete()) {
                 log.warn("导出失败后清理半成品文件失败，需要人工处理。path={}", file.getAbsolutePath());
             }
@@ -356,6 +403,31 @@ public class ExportConsumer {
             metrics.recordResultDropped(SqlPlatformMetrics.LINK_EXPORT);
             log.error("导出任务已不再处于 RUNNING，本次结果未落库，需人工核对。"
                     + "taskId={}, 本次结果={}", taskId, status);
+        }
+    }
+
+    /**
+     * 原子改名。系统支持就用 ATOMIC_MOVE，不支持就退回普通 move。
+     *
+     * <p>"原子"的意义：改名这一下要么没发生、要么整个发生 ——
+     * **不会出现"文件名在了、内容还缺一半"的中间态**。
+     */
+    private void moveAtomically(File from, File to) throws IOException {
+        try {
+            java.nio.file.Files.move(from.toPath(), to.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+            // 跨文件系统等情况不支持原子改名 —— 退回普通 move，仍然比直接写最终文件好
+            log.warn("文件系统不支持原子改名，退回普通 move。path={}", to.getAbsolutePath());
+            java.nio.file.Files.move(from.toPath(), to.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private void deleteQuietly(File file) {
+        if (file != null && file.exists() && !file.delete()) {
+            log.warn("清理临时文件失败，需要人工处理。path={}", file.getAbsolutePath());
         }
     }
 
@@ -427,8 +499,7 @@ public class ExportConsumer {
                         if (i > 1) {
                             writer.write(",");
                         }
-                        Object value = resultSet.getObject(i);
-                        writer.write(csvEscape(value == null ? "" : value.toString()));
+                        writer.write(csvEscape(csvValue(resultSet.getObject(i))));
                     }
                     writer.write("\n");
                 }
@@ -438,13 +509,55 @@ public class ExportConsumer {
         return rowCount;
     }
 
-    private String csvEscape(String value){
+    /**
+     * 把一个 JDBC 值转成 CSV 单元格文本。
+     *
+     * <h2>⚠️ 为什么不能直接用 toString()</h2>
+     *
+     * <p>二进制列（binary / varbinary / blob / geometry）的 {@code toString()} 是
+     * {@code [B@1a2b3c} 这种**对象地址** —— 一份"看起来正常"的 CSV，里面全是乱码地址。
+     * 这是最坏的一类错误：**不报错、不告警，用户拿去用**。
+     *
+     * <p>所以按类型分支：二进制转 Base64（和查询页走 Jackson 的表示一致 ——
+     * 同一份数据在两条链路上不该有两种写法）。
+     */
+    String csvValue(Object value) throws Exception {
         if (value == null) {
             return "";
         }
-        if (value.contains(",") || value.contains("\"") || value.contains("\n") || value.contains("\r")) {
-            return "\"" + value.replace("\"", "\"\"") + "\"";
+        if (value instanceof byte[] bytes) {
+            return java.util.Base64.getEncoder().encodeToString(bytes);
         }
-        return value;
+        if (value instanceof java.sql.Blob blob) {
+            try (java.io.InputStream in = blob.getBinaryStream()) {
+                return java.util.Base64.getEncoder().encodeToString(in.readAllBytes());
+            }
+        }
+        if (value instanceof java.sql.Clob clob) {
+            return clob.getSubString(1, (int) clob.length());
+        }
+        return value.toString();
+    }
+
+    /**
+     * CSV 转义。<b>两件事</b>：结构性转义（逗号/引号/换行），以及**公式注入防护**。
+     *
+     * <p>⚠️ 公式注入：以 {@code =} {@code +} {@code -} {@code @} 或制表符/回车开头的单元格，
+     * Excel / WPS 打开时会**当成公式执行**（可以外带数据）。
+     * 防护是前置一个单引号 —— 表格里看着一样，但不再被当公式解析。
+     */
+    String csvEscape(String value){
+        if (value == null) {
+            return "";
+        }
+        String escaped = value;
+        if (!value.isEmpty() && "=+-@\t\r".indexOf(value.charAt(0)) >= 0) {
+            escaped = "'" + value;
+        }
+        if (escaped.contains(",") || escaped.contains("\"")
+                || escaped.contains("\n") || escaped.contains("\r")) {
+            return "\"" + escaped.replace("\"", "\"\"") + "\"";
+        }
+        return escaped;
     }
 }

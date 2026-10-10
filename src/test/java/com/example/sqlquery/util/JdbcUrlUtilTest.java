@@ -127,4 +127,65 @@ class JdbcUrlUtilTest {
         assertThrows(BusinessException.class,
                 () -> JdbcUrlUtil.build(dbSource("  ", "h", 3306, "d")));
     }
+
+    @Test
+    @DisplayName("★ MySQL 时区可配：写死会让对接 UTC 的库时所有时间字段整体偏 8 小时")
+    void mysqlServerTimezoneShouldBeConfigurable() {
+        String original = JdbcUrlUtil.serverTimezone();
+        try {
+            JdbcUrlUtil.setServerTimezone("UTC");
+
+            assertEquals("UTC", JdbcUrlUtil.serverTimezone());
+            assertTrue(JdbcUrlUtil.build(dbSource("MySQL", "h", 3306, "d"))
+                            .contains("serverTimezone=UTC"),
+                    "配了却没生效 —— 这个参数决定驱动把库里的时间当哪个时区解释，"
+                            + "错了不会报错，只会整体偏移");
+            // PostgreSQL 没有这个开关：PG 的时区由服务端 TimeZone 决定，
+            // 连接串里硬塞一个不存在的参数会让 PG 直接拒连
+            assertTrue(!JdbcUrlUtil.build(dbSource("PostgreSQL", "h", 5432, "d"))
+                    .contains("serverTimezone"));
+        } finally {
+            // 静态字段：不还原会污染同一个 JVM 里后面跑的用例
+            JdbcUrlUtil.setServerTimezone(original);
+        }
+    }
+
+    @Test
+    @DisplayName("★ 时区串里的 & 必须被拒绝：它会被直接拼进 JDBC URL")
+    void timezoneWithUrlInjectionShouldBeRejected() {
+        String original = JdbcUrlUtil.serverTimezone();
+        try {
+            // 一个 & 就能往连接串里塞任意驱动参数。配置项由运维填写，
+            // 但"改一个时区配置顺手关掉一条安全属性"这件事本身就不该存在
+            JdbcUrlUtil.setServerTimezone("Asia/Shanghai&allowLoadLocalInfile=true");
+            assertEquals(original, JdbcUrlUtil.serverTimezone(), "含 & 的值必须被忽略");
+            assertTrue(!JdbcUrlUtil.build(dbSource("MySQL", "h", 3306, "d"))
+                    .contains("allowLoadLocalInfile"));
+
+            JdbcUrlUtil.setServerTimezone(null);
+            assertEquals(original, JdbcUrlUtil.serverTimezone());
+            JdbcUrlUtil.setServerTimezone("   ");
+            assertEquals(original, JdbcUrlUtil.serverTimezone());
+            JdbcUrlUtil.setServerTimezone("UTC?a=b");
+            assertEquals(original, JdbcUrlUtil.serverTimezone());
+        } finally {
+            JdbcUrlUtil.setServerTimezone(original);
+        }
+    }
+
+    @Test
+    @DisplayName("默认是国内时区，也接受 GMT+8 这种带偏移的写法")
+    void timezoneDefaultAndOffsetForm() {
+        String original = JdbcUrlUtil.serverTimezone();
+        try {
+            JdbcUrlUtil.setServerTimezone(original);
+            assertTrue(JdbcUrlUtil.build(dbSource("MySQL", "h", 3306, "d"))
+                    .contains("serverTimezone=Asia/Shanghai"));
+
+            JdbcUrlUtil.setServerTimezone("GMT+8");
+            assertEquals("GMT+8", JdbcUrlUtil.serverTimezone());
+        } finally {
+            JdbcUrlUtil.setServerTimezone(original);
+        }
+    }
 }

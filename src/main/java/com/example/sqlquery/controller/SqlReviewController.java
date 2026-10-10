@@ -89,7 +89,7 @@ public class SqlReviewController {
         Long userId = UserContext.get();
         // 按用户分桶限流：限的是"某个人刷得太快"，不是"整个平台的总量"
         if (!rateLimitUtil.tryAcquireSlidingWindow(
-                "rate:sql-review:" + userId, maxRequests, windowSeconds)) {
+                "rate:sql-review:" + userId, maxRequests, windowSeconds, "sql-review")) {
             throw new BusinessException("提交太频繁，请稍后再试");
         }
         return Result.success(sqlReviewService.submit(userId, dto));

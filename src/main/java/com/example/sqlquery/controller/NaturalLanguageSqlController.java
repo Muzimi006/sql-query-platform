@@ -5,6 +5,7 @@ import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.dto.Nl2SqlRequestDTO;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.service.NaturalLanguageSqlService;
+import com.example.sqlquery.util.Nl2SqlConcurrencyGuard;
 import com.example.sqlquery.util.RateLimitUtil;
 import com.example.sqlquery.vo.SqlReviewRequestVO;
 import jakarta.validation.Valid;
@@ -23,6 +24,10 @@ import java.util.Map;
  *
  * <p>任何登录用户都能用：它产生的只是一张<b>待审</b>工单，
  * 和他手写一条 SQL 提交上去是同一件事，权限要求也应当一致。
+ *
+ * <p>入口有两道闸：<b>频率</b>限流（每人每分钟几次）和<b>并发</b>上限
+ * （{@link Nl2SqlConcurrencyGuard}，同时在跑几个）。
+ * 前者拦"脚本刷"，后者拦"一次生成要等 30 秒、几个请求就把线程占满"。
  */
 @RestController
 @RequestMapping("/api/nl2sql")
@@ -31,6 +36,7 @@ public class NaturalLanguageSqlController {
 
     private final NaturalLanguageSqlService naturalLanguageSqlService;
     private final RateLimitUtil rateLimitUtil;
+    private final Nl2SqlConcurrencyGuard concurrencyGuard;
 
     /**
      * 单用户每分钟最多生成几次。
@@ -46,7 +52,9 @@ public class NaturalLanguageSqlController {
     private int windowSeconds;
 
     public NaturalLanguageSqlController(NaturalLanguageSqlService naturalLanguageSqlService,
-                                        RateLimitUtil rateLimitUtil) {
+                                        RateLimitUtil rateLimitUtil,
+                                        Nl2SqlConcurrencyGuard concurrencyGuard) {
+        this.concurrencyGuard = concurrencyGuard;
         this.naturalLanguageSqlService = naturalLanguageSqlService;
         this.rateLimitUtil = rateLimitUtil;
     }
@@ -62,10 +70,23 @@ public class NaturalLanguageSqlController {
     public Result<SqlReviewRequestVO> ticket(@Valid @RequestBody Nl2SqlRequestDTO dto) {
         Long userId = UserContext.get();
         if (!rateLimitUtil.tryAcquireSlidingWindow(
-                "rate:nl2sql:" + userId, maxRequests, windowSeconds)) {
+                "rate:nl2sql:" + userId, maxRequests, windowSeconds, "nl2sql")) {
             throw new BusinessException("生成太频繁，请稍后再试");
         }
-        return Result.success(naturalLanguageSqlService.generateTicket(userId, dto));
+
+        // 频率限制过后还有一道并发限制，两者不能互相替代：
+        // 上面那道管"一分钟点了几次"，这一道管"此刻有几个请求还挂在模型调用上"。
+        // 一次生成最长占 30 秒 Web 线程，只有频率限制时 5 次/分钟 = 5 个线程同时在等。
+        if (!concurrencyGuard.tryAcquire()) {
+            throw new BusinessException("当前生成任务较多，请稍后再试");
+        }
+        try {
+            return Result.success(naturalLanguageSqlService.generateTicket(userId, dto));
+        } finally {
+            // 必须 finally：抛异常（包括模型返回不合规被拒）也要把额度还回去，
+            // 否则每失败一次就永久少一个额度，最后整个功能卡死
+            concurrencyGuard.release();
+        }
     }
 
     /**

@@ -1,5 +1,6 @@
 package com.example.sqlquery.cache;
 
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -42,6 +43,14 @@ import org.springframework.stereotype.Component;
  * 再连 Redis</b> 的。所以连接失败抛异常时，{@code isRunning()} 已经返回 {@code true}。
  * 用它判断"是否订阅成功"，重试会永远被跳过。这里维护自己的 {@link #subscribed} 标记，
  * 只在 {@code start()} 正常返回后才置位。
+
+ * <h2>看门狗：订阅成功之后也要能被发现"它死了"</h2>
+ *
+ * <p>{@link #subscribed} 只表达"曾经订阅成功"。容器在运行中被判定死亡时它不会变，
+ * 于是重试逻辑再也进不来 —— 这是一个<b>只有"永不重启的进程"才会遇到</b>的静默故障。
+ * 所以每次重试调度同时兼作看门狗：已订阅但容器不在运行时，
+ * 记一条 ERROR、埋一个计数器（{@code redis.subscriber.restart}）并重建订阅。
+ * 当前状态本身也暴露成 Gauge（{@code redis.subscriber.up}）。
  */
 @Slf4j
 @Component
@@ -49,6 +58,7 @@ public class RedisSubscriptionStarter {
 
     private final RedisConnectionFactory connectionFactory;
     private final DbSourceCacheInvalidationListener listener;
+    private final SqlPlatformMetrics metrics;
 
     /** 与重试调度共用同一个配置项，避免"日志说的时间"和"实际重试的时间"对不上。 */
     @Value("${redis.subscriber-retry-ms:30000}")
@@ -66,9 +76,23 @@ public class RedisSubscriptionStarter {
     private volatile RedisMessageListenerContainer container;
 
     public RedisSubscriptionStarter(RedisConnectionFactory connectionFactory,
-                                    DbSourceCacheInvalidationListener listener) {
+                                    DbSourceCacheInvalidationListener listener,
+                                    SqlPlatformMetrics metrics) {
         this.connectionFactory = connectionFactory;
         this.listener = listener;
+        this.metrics = metrics;
+
+        // 订阅状态必须是**一条能看见的曲线**，不能只在启动日志里说一次：
+        // 订阅失败的后果是多实例部署时数据源失效广播收不到 ——
+        // 表现是"A 机器改了数据源，B 机器的连接池还是旧的"，
+        // 而这期间没有任何一条日志、任何一个数字在变化。
+        metrics.registerRedisSubscriberUpGauge(this::isSubscribed);
+    }
+
+    /** 1 = 已订阅且连接容器在跑；0 = 没订阅或容器已停。 */
+    private int isSubscribed() {
+        RedisMessageListenerContainer current = this.container;
+        return subscribed && current != null && current.isRunning() ? 1 : 0;
     }
 
     /** 应用就绪后再启动订阅：此时 Web 层已能对外服务，订阅晚几百毫秒不影响正确性。 */
@@ -88,7 +112,30 @@ public class RedisSubscriptionStarter {
             initialDelayString = "${redis.subscriber-retry-ms:30000}")
     public void retryIfNotSubscribed() {
         if (subscribed) {
-            return;
+            // ── 看门狗：订阅成功之后，这里不再重试，但**必须发现"它后来又死了"** ──
+            //
+            // 以前这段是直接 return 的，于是有一个没人管的空洞：
+            // 容器在运行中被判定死亡（连接彻底断开且重连无望）时，
+            // subscribed 仍然是 true，重试永远被跳过 —— 失效广播就这么静默地停了，
+            // 直到进程重启为止。
+            //
+            // 为什么这里可以用 isRunning()：类注释里说过它**不能**用来判断"订阅成功"
+            // （start() 会先置位再连 Redis，连失败时它也是 true）。
+            // 但反过来是成立的：isRunning() == false 就一定没在跑。
+            // 作为一个"死亡探测器"，它不会误报（只可能漏报）。
+            RedisMessageListenerContainer current = this.container;
+            if (current != null && current.isRunning()) {
+                return;
+            }
+
+            log.error("Redis 订阅容器已经不在运行（原来标记为已订阅），失效广播在此期间收不到 —— "
+                    + "多实例部署时连接池可能不同步。现在重建订阅。");
+            metrics.recordRedisSubscriberRestart();
+            // 先销毁再改状态：destroyQuietly 里的 stop() 会再触发一次状态变化，
+            // 顺序反了会留下一个"已销毁但仍然标记为已订阅"的窗口
+            destroyQuietly(current);
+            this.container = null;
+            this.subscribed = false;
         }
         log.warn("Redis 订阅尚未成功，重试中（间隔 {}ms）", retryIntervalMs);
         tryStart();

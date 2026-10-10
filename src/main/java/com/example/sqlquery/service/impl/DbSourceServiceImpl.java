@@ -207,6 +207,10 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
     public boolean testConnection(DbSourceDTO dto) {
         DbSource dbSource = toEntity(dto);
         String url = JdbcUrlUtil.build(dbSource);
+        // ⚠️ 显式设一个登录超时：连接串里的 connectTimeout **管不到 DNS 解析阶段**，
+        //    而这正是"把一个不可达主机名填进来"时最容易卡住的地方。
+        //    DriverManager 是全局设置，设成 5 秒与 JdbcUrlUtil 的 connectTimeout 对齐。
+        DriverManager.setLoginTimeout(5);
         try(Connection connection = DriverManager.getConnection(
                 url,
                 dbSource.getUsername(),

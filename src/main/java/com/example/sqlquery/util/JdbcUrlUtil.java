@@ -37,7 +37,52 @@ public class JdbcUrlUtil {
      */
     static final int CONNECT_TIMEOUT_MS = 5_000;
 
+    /**
+     * MySQL 侧的 {@code serverTimezone}。
+     *
+     * <p>它写死过一段时间（一直是 {@code Asia/Shanghai}）。写死的代价不是"不好看"：
+     * 驱动靠它解释库里每一个 {@code TIMESTAMP/DATETIME}，接一个 UTC 的库时
+     * <b>所有时间字段整体偏 8 小时，且不报错</b>。
+     *
+     * <p>现在是可配的（{@code datasource.mysql.server-timezone}），
+     * 由 {@code JdbcUrlTimezoneConfig} 在启动时注入一次。
+     */
+    private static volatile String serverTimezone = SqlDialect.DEFAULT_SERVER_TIMEZONE;
+
+    /**
+     * 时区串的合法形状：IANA 名（{@code Asia/Shanghai}）、缩写（{@code UTC}）、
+     * 带偏移的写法（{@code GMT+8}）。
+     *
+     * <p><b>校验不是多余的</b>：这个值会被直接拼进 JDBC URL，
+     * 一个 {@code &} 就能往连接串里塞任意参数（例如 {@code &allowLoadLocalInfile=true}）。
+     * 配置项多半来自运维，但"配置里能顺手改掉一条安全属性"这件事本身就不该存在。
+     */
+    private static final java.util.regex.Pattern TIMEZONE_PATTERN =
+            java.util.regex.Pattern.compile("[A-Za-z0-9_+\\-/]{1,64}");
+
     private JdbcUrlUtil() {
+    }
+
+    /**
+     * 设置 MySQL 时区（只应在启动时调用一次）。
+     *
+     * <p>非法值<b>不会抛异常</b>，只是被忽略并留一条 WARN：
+     * 这是一个保护性配置，拼错它不该让应用起不来 —— 沿用默认值即可。
+     */
+    public static void setServerTimezone(String value) {
+        if (value == null || !TIMEZONE_PATTERN.matcher(value.trim()).matches()) {
+            org.slf4j.LoggerFactory.getLogger(JdbcUrlUtil.class).warn(
+                    "datasource.mysql.server-timezone 的值不合法，已忽略并沿用 {}。"
+                            + "只允许字母/数字/_/+/-//，且不能包含 & 或 =（那些会被拼进连接串）",
+                    serverTimezone);
+            return;
+        }
+        serverTimezone = value.trim();
+    }
+
+    /** 当前生效的 MySQL 时区（测试与日志用）。 */
+    static String serverTimezone() {
+        return serverTimezone;
     }
 
     /**
@@ -48,6 +93,6 @@ public class JdbcUrlUtil {
     public static String build(DbSource dbSource) {
         SqlDialect dialect = SqlDialect.fromType(dbSource.getType());
         return dialect.jdbcUrl(dbSource.getHost(), dbSource.getPort(), dbSource.getDatabaseName())
-                + dialect.connectionParams(CONNECT_TIMEOUT_MS);
+                + dialect.connectionParams(CONNECT_TIMEOUT_MS, serverTimezone);
     }
 }

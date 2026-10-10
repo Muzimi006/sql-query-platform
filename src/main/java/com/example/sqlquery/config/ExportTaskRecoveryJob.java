@@ -63,6 +63,9 @@ import java.util.List;
 @Component
 public class ExportTaskRecoveryJob {
 
+    /** 一轮最多处理多少条。事故后 PENDING/RUNNING 行可能上万，不能一次全捞。 */
+    private static final int BATCH_SIZE = 200;
+
     private final ExportTaskMapper exportTaskMapper;
 
     /**
@@ -92,8 +95,51 @@ public class ExportTaskRecoveryJob {
      * 而导出链路当时<b>根本没有设超时</b>。现在两边的值对上了，
      * 而且这个约束关系写在注释里，改一个值的时候能看到另一个。）
      */
-    @Value("${export.stuck-running-minutes:10}")
+    @Value("${export.stuck-running-minutes:20}")
     private int stuckRunningMinutes;
+
+    /**
+     * 单条导出 SQL 的超时（秒）—— 用来校验下面那个不变式。
+     *
+     * <p>⚠️ 这个值必须和 {@link ExportConsumer} 用的是同一个配置项，
+     * 否则这里的校验就是假的。
+     */
+    @Value("${export.query-timeout-seconds:300}")
+    private int exportQueryTimeoutSeconds;
+
+    /** 一次投递最多尝试几次（含第一次）—— 重试会把最坏耗时乘上这个倍数。
+     *
+     * <p>⚠️ 这是审计发现的一个**真实的时间预算错配**：导出消费者加了退避重试之后，
+     * 一条接近超时的导出最坏会跑 {@code maxAttempts × query-timeout}（默认 3 × 300s = 15 分钟），
+     * 而当时 {@code stuck-running-minutes} 还是 10 —— **补偿任务会在消费者还在第 2 次尝试时
+     * 就把它判成失败**，然后消费者的结果因为认领令牌已失配写不回去（只剩一条日志）。
+     */
+    @Value("${mq.consumer.retry.max-attempts:3}")
+    private int maxAttempts;
+
+    /**
+     * 启动时校验"补偿阈值"与"最坏执行耗时"的关系。
+     *
+     * <p>为什么不直接抛异常：这是一个**已经在跑的部署**可能配错的值，
+     * 因为一个"时间预算"把应用拦在启动之外，代价大于收益。
+     * 但**必须喊得很响**（ERROR + 两个具体数字 + 该怎么改），
+     * 否则它会以"任务莫名其妙被判失败"的形式出现，离根因很远。
+     *
+     * <p>⚠️ 这条不变式以前只写在注释里 —— 而注释不会拦人。
+     * 审计发现它已经被破坏过一次（加了重试但没调阈值）。
+     */
+    @jakarta.annotation.PostConstruct
+    void warnIfTimeBudgetTooSmall() {
+        int worstCaseSeconds = maxAttempts * exportQueryTimeoutSeconds;
+        int thresholdSeconds = stuckRunningMinutes * 60;
+        if (thresholdSeconds <= worstCaseSeconds) {
+            log.error("⚠️ 补偿阈值小于最坏执行耗时，正常任务会被误判为卡死："
+                            + "stuck-running-minutes={}（={}秒） <= max-attempts({}) × query-timeout-seconds({}) = {}秒。"
+                            + "请把 export.stuck-running-minutes 调到大于 {} 分钟（建议留 5 分钟排队余量）。",
+                    stuckRunningMinutes, thresholdSeconds, maxAttempts, exportQueryTimeoutSeconds,
+                    worstCaseSeconds, (worstCaseSeconds + 299) / 60 + 5);
+        }
+    }
 
     private final SqlPlatformMetrics metrics;
 
@@ -136,6 +182,11 @@ public class ExportTaskRecoveryJob {
         List<ExportTask> stuck = exportTaskMapper.selectList(
                 new LambdaQueryWrapper<ExportTask>()
                         .eq(ExportTask::getStatus, stuckStatus)
+                        // ⚠️ 必须有上限：事故之后（队列长期不可用）PENDING 行可能上万，
+                        //    一次全捞进内存 + 逐条 UPDATE 会和正常流量抢平台库连接 ——
+                        //    **补偿任务自己变成故障放大器**。工单侧的 selectStuck 早就分了页，
+                        //    这里是对齐它。
+                        .last("LIMIT " + BATCH_SIZE)
                         // ⚠️ 必须把 NULL 一起收进来，而且**必须用 and(...) 包起来**：
                         //    .lt(...).or().isNull(...) 会展开成 `status = ? AND time < ? OR time IS NULL`
                         //    —— SQL 里 AND 比 OR 结合得紧，那会变成「(状态对 且 超时) 或 (时间为空)」，
@@ -151,24 +202,33 @@ public class ExportTaskRecoveryJob {
         }
 
         for (ExportTask task : stuck) {
-            // 条件更新加一道保险：只有<b>仍然</b>停在这个状态才改。
-            // 不用 updateById 是因为"查出来 → 改 → 写回"中间有时间窗，
-            // 任务可能已经被消费者正常完成了，那样会把 SUCCESS 覆盖成 FAILED。
-            int affected = exportTaskMapper.update(null, new LambdaUpdateWrapper<ExportTask>()
-                    .eq(ExportTask::getId, task.getId())
-                    .eq(ExportTask::getStatus, stuckStatus)
-                    .set(ExportTask::getStatus, ExportStatus.FAILED)
-                    .set(ExportTask::getErrorMessage, reason)
-                    .set(ExportTask::getFinishedAt, LocalDateTime.now()));
+            // ⚠️ 必须逐条捕获：一条脏数据/一次连接闪断不应该让**这一轮剩下的全部跳过**
+            //    （工单侧那条路径早就是逐条捕获的，两处不一致本身就是隐患）。
+            try {
+                // 条件更新加一道保险：只有<b>仍然</b>停在这个状态才改。
+                // 不用 updateById 是因为"查出来 → 改 → 写回"中间有时间窗，
+                // 任务可能已经被消费者正常完成了，那样会把 SUCCESS 覆盖成 FAILED。
+                int affected = exportTaskMapper.update(null, new LambdaUpdateWrapper<ExportTask>()
+                        .eq(ExportTask::getId, task.getId())
+                        .eq(ExportTask::getStatus, stuckStatus)
+                        .set(ExportTask::getStatus, ExportStatus.FAILED)
+                        .set(ExportTask::getErrorMessage, reason)
+                        .set(ExportTask::getFinishedAt, LocalDateTime.now()));
 
-            if (affected == 1) {
-                // ⭐ 补偿任务以前只有 WARN 日志 —— 批量发生时（事故后）没人能立刻知道规模
-                metrics.recordRecoveryFailed(SqlPlatformMetrics.LINK_EXPORT);
-                log.warn("导出任务长时间停留在 {}，已标记为失败。taskId={}, 超时阈值={}分钟",
-                        stuckStatus, task.getId(), stuckRunningMinutes);
-            } else {
-                log.info("导出任务在补偿时状态已变化（可能刚被完成），跳过。taskId={}", task.getId());
+                if (affected == 1) {
+                    // ⭐ 补偿任务以前只有 WARN 日志 —— 批量发生时（事故后）没人能立刻知道规模
+                    metrics.recordRecoveryFailed(SqlPlatformMetrics.LINK_EXPORT);
+                    log.warn("导出任务长时间停留在 {}，已标记为失败。taskId={}, 超时阈值={}分钟",
+                            stuckStatus, task.getId(), stuckRunningMinutes);
+                } else {
+                    log.info("导出任务在补偿时状态已变化（可能刚被完成），跳过。taskId={}", task.getId());
+                }
+            } catch (Exception e) {
+                // 一条失败不能拖垮整轮：剩下的还要继续处理
+                log.error("补偿导出任务失败，已跳过，本轮其余继续。taskId={}", task.getId(), e);
             }
         }
+
+        log.info("本轮补偿扫描完成。status={}, 命中={}", stuckStatus, stuck.size());
     }
 }

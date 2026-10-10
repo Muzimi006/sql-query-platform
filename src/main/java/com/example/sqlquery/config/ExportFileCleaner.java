@@ -33,6 +33,40 @@ public class ExportFileCleaner {
     @Value("${export.file-retention-days:7}")
     private int retentionDays;
 
+    /**
+     * 临时文件（{@code *.csv.tmp}）的保留小时数。
+     *
+     * <p>正常情况下它只存在几秒（写文件的时间），做成"几小时"是为了避免
+     * 误删一个正在写的大导出 —— 6 小时远大于任何一次导出的执行上限。
+     */
+    @Value("${export.tmp-retention-hours:6}")
+    private int tmpRetentionHours;
+
+    /**
+     * 清理 {@code exports/} 下过期的临时文件。
+     *
+     * <p>⚠️ 这是**按目录扫**、不查数据库 —— 因为崩溃留下的 .tmp 在库里没有任何记录。
+     * 这也正是"原子改名"这个改动的前提：脏东西必须有一个统一能扫到的地方。
+     */
+    void cleanStaleTempFiles() {
+        File[] files = new File("exports").listFiles((dir, name) -> name.endsWith(".csv.tmp"));
+        if (files == null || files.length == 0) {
+            return;
+        }
+
+        long deadline = System.currentTimeMillis() - tmpRetentionHours * 3600_000L;
+        int cleaned = 0;
+        for (File file : files) {
+            if (file.lastModified() < deadline && file.delete()) {
+                cleaned++;
+            }
+        }
+        if (cleaned > 0) {
+            log.info("清理导出临时文件：扫描 {} 个，删除 {} 个（保留 {} 小时）",
+                    files.length, cleaned, tmpRetentionHours);
+        }
+    }
+
     public ExportFileCleaner(ExportTaskMapper exportTaskMapper) {
         this.exportTaskMapper = exportTaskMapper;
     }
@@ -40,6 +74,13 @@ public class ExportFileCleaner {
     /** 默认每天凌晨 3 点执行。 */
     @Scheduled(cron = "${export.clean-cron:0 0 3 * * ?}")
     public void cleanExpiredFiles() {
+        // ⭐ 先清临时文件。
+        //    导出改成"先写 .tmp 再原子改名"之后，进程被 kill -9 会留下 .tmp ——
+        //    它的 file_path 是 NULL、清理任务按数据库扫永远看不到它，
+        //    所以这里必须**按目录扫**。
+        //    超时给得比正式文件短得多（默认 6 小时）：正常情况下 .tmp 只存在几秒到几分钟。
+        cleanStaleTempFiles();
+
         LocalDateTime deadline = LocalDateTime.now().minusDays(retentionDays);
 
         List<ExportTask> expired = exportTaskMapper.selectList(

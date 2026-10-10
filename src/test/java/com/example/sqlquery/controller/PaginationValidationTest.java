@@ -29,7 +29,7 @@ class PaginationValidationTest {
     private Set<ConstraintViolation<DbSourceController>> validateDbSourcePage(long page, long size)
             throws Exception {
         Method method = DbSourceController.class.getMethod("page", long.class, long.class);
-        return validator.validateParameters(new DbSourceController(null), method, new Object[]{page, size});
+        return validator.validateParameters(new DbSourceController(null, null), method, new Object[]{page, size});
     }
 
     private Set<ConstraintViolation<HistoryController>> validateHistoryPage(long page, long size)

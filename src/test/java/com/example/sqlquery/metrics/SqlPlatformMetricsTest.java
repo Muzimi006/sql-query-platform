@@ -65,13 +65,35 @@ class SqlPlatformMetricsTest {
     void truncationAndRateLimitShouldBeCountedSeparately() {
         metrics.recordQueryTruncated();
         metrics.recordQueryTruncated();
-        metrics.recordRateLimited();
+        metrics.recordRateLimited("query");
 
         Counter truncated = registry.find(SqlPlatformMetrics.QUERY_TRUNCATED).counter();
-        Counter limited = registry.find(SqlPlatformMetrics.QUERY_RATE_LIMITED).counter();
+        Counter limited = registry.find(SqlPlatformMetrics.QUERY_RATE_LIMITED)
+                .tag("scope", "query").counter();
 
         assertEquals(2.0, truncated.count());
         assertEquals(1.0, limited.count());
+    }
+
+    @Test
+    @DisplayName("七道限流共用同一个计数器，必须靠 scope 标签区分")
+    void rateLimitCounterShouldCarryScopeTag() {
+        metrics.recordRateLimited("login-ip");
+        metrics.recordRateLimited("login-account");
+        metrics.recordRateLimited("query");
+
+        // "哪一道限流在拦人"是看板要回答的第一个问题：
+        // 不带标签的话，登录被撞库刷爆和某个用户刷查询导出的是同一个数字，
+        // 看到它在涨也不知道该动哪个阈值。
+        assertEquals(1.0, registry.find(SqlPlatformMetrics.QUERY_RATE_LIMITED)
+                .tag("scope", "login-ip").counter().count());
+        assertEquals(1.0, registry.find(SqlPlatformMetrics.QUERY_RATE_LIMITED)
+                .tag("scope", "login-account").counter().count());
+        assertEquals(1.0, registry.find(SqlPlatformMetrics.QUERY_RATE_LIMITED)
+                .tag("scope", "query").counter().count());
+        assertNull(registry.find(SqlPlatformMetrics.QUERY_RATE_LIMITED)
+                        .tag("scope", "nl2sql").counter(),
+                "没有触发过的 scope 不该凭空出现一条时间线");
     }
 
     @Test
@@ -214,7 +236,7 @@ class SqlPlatformMetricsTest {
         metrics.recordQuerySuccess(10);
         metrics.recordQueryFailure(10);
         metrics.recordQueryTruncated();
-        metrics.recordRateLimited();
+        metrics.recordRateLimited("query");
         metrics.recordQueryRejected("per-user");
         metrics.recordCircuitRejected();
         metrics.recordCircuitOpened();

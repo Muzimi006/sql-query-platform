@@ -115,6 +115,26 @@ management:
         readiness:
           include: db
 
+# 业务数据源（用户在页面上添加的那些库）的连接行为。
+datasource:
+  # MySQL 驱动解释时间字段所用的时区。
+  #
+  # ⚠️ 这个值不是"格式问题"：驱动靠它把库里的 TIMESTAMP/DATETIME 换算成时间对象，
+  #    写死成 Asia/Shanghai 时，对接一个 UTC 的库会让**所有时间字段整体偏 8 小时**，
+  #    而且不会报任何错。对接非国内时区的库时改这里。
+  #    非法值（含 & 或 =，会被拼进连接串）只记 WARN 并沿用默认值，不会让应用起不来。
+  mysql:
+    server-timezone: ${MYSQL_SERVER_TIMEZONE:Asia/Shanghai}
+
+  # 「测试连接」接口的限流。
+  #
+  # ⚠️ 这个接口会让服务器去连任意 host:port：一次调用最多占一个 Tomcat 线程 5 秒，
+  #    而且它天然是一个端口探测面。能连出去的接口一定要有次数上限。
+  test-connection:
+    rate-limit:
+      max-requests: 10
+      window-seconds: 60
+
 # 消息队列相关的运维配置
 mq:
   # 死信队列巡检间隔。
@@ -126,6 +146,14 @@ mq:
   #    并在非空时打 ERROR。**它只负责"看得见"，不做自动重放** ——
   #    进了死信的消息对应的业务状态是未知的，自动重放等于把说不清状态的操作再执行一遍。
   dlq-check-cron: "0 */10 * * * ?"
+
+  # 死信队列深度快照的刷新间隔。
+  #
+  # ⚠️ 深度是**快照**，不是抓取时现查：Gauge 的 Supplier 跑在 Prometheus 抓取线程上，
+  #    让它去等一次 AMQP 请求-应答，Broker 挂掉时会把整个 /actuator/prometheus 拖到超时 ——
+  #    于是故障期间恰好丢掉全部指标。代价是最多滞后一个刷新周期，
+  #    滞后本身由 mq_queue_depth_age_seconds 暴露出来。
+  dlq-depth-refresh-ms: 15000
 
   # 队列容量。x-max-length / x-overflow 是**队列参数** ——
   # ⚠️ 给已存在的同名队列改这两个值，Broker 会报 PRECONDITION_FAILED (406)：
@@ -195,6 +223,16 @@ platform:
     rate-limit:
       max-requests: 5
       window-seconds: 60
+
+    # 并发上限（同时在跑的生成任务数）。**频率限制不能替代它**：
+    # 频率限制管"一分钟点了几次"，管不住"此刻有几个请求还挂在模型调用上"。
+    # 一次生成最长占 30 秒 Web 线程，只有频率限制时 5 次/分钟 = 5 个线程同时在等。
+    #
+    # ⚠️ 这是**单进程**的闸门：多实例部署时全局上限 = 实例数 × 这个值。
+    max-concurrent: 4
+    # 拿不到额度时最多等多久（毫秒）。NL2SQL 本身就是秒级操作，
+    # 等一下再进去比直接被拒绝体验好；等不到才是真的该拒绝。
+    acquire-timeout-ms: 2000
 
   # 查询的并发闸门（注意：这是**并发**限制，不是速率限制）
   #

@@ -90,7 +90,9 @@ public class AuthController {
         // 注册接口原来完全没有限流，一个脚本就能批量刷出垃圾账号
         String ip = ClientIpUtil.getClientIp(request);
         if (!rateLimitUtil.tryAcquireSlidingWindow(
-                "rate:register:ip:" + ip, REGISTER_LIMIT_PER_IP, AUTH_WINDOW_SECONDS)) {
+                "rate:register:ip:" + ip, REGISTER_LIMIT_PER_IP, AUTH_WINDOW_SECONDS,
+                // scope 是给指标用的固定标签，不是 key —— 它只回答"是哪一道限流在拦人"
+                "register-ip")) {
             throw new BusinessException("注册过于频繁，请稍后再试");
         }
 
@@ -121,9 +123,10 @@ public class AuthController {
         String ip = ClientIpUtil.getClientIp(request);
 
         boolean ipAllowed = rateLimitUtil.tryAcquireSlidingWindow(
-                "rate:login:ip:" + ip, LOGIN_LIMIT_PER_IP, AUTH_WINDOW_SECONDS);
+                "rate:login:ip:" + ip, LOGIN_LIMIT_PER_IP, AUTH_WINDOW_SECONDS, "login-ip");
         boolean accountAllowed = rateLimitUtil.tryAcquireSlidingWindow(
-                "rate:login:username:" + dto.getUsername(), LOGIN_LIMIT_PER_USERNAME, AUTH_WINDOW_SECONDS);
+                "rate:login:username:" + dto.getUsername(), LOGIN_LIMIT_PER_USERNAME, AUTH_WINDOW_SECONDS,
+                "login-account");
 
         if (!ipAllowed || !accountAllowed) {
             throw new BusinessException("登录尝试过于频繁，请稍后再试");

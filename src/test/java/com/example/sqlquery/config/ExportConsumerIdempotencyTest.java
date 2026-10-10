@@ -22,6 +22,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.time.LocalDateTime;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -106,10 +107,34 @@ class ExportConsumerIdempotencyTest {
         // 消息必须被 ack：不 ack 的话 Broker 会一直重投，陷入死循环
         Mockito.verify(channel).basicAck(42L, false);
         Mockito.verify(channel, Mockito.never()).basicNack(Mockito.anyLong(), Mockito.anyBoolean(), Mockito.anyBoolean());
-        // 关键：没有真的去干活
-        Mockito.verify(exportTaskMapper, Mockito.never()).selectById(Mockito.anyLong());
+        // ⚠️ 注意：现在**允许**查一次状态 —— 认领失败有两种情况（已完成 / 还在跑），
+        //    日志级别要分开，所以必须看一眼当前状态（见 warnIfRedeliveredInFlight）。
+        //    这里"没干活"的判据改成：**不碰数据源、不写文件**。
+        Mockito.verify(exportTaskMapper, Mockito.atMostOnce()).selectById(Mockito.anyLong());
         Mockito.verify(dbSourceService, Mockito.never())
-                .getByIdAndUserId(Mockito.anyLong(), Mockito.anyLong());
+                .getEnabledByIdAndUserId(Mockito.anyLong(), Mockito.anyLong());
+        Mockito.verify(consumer, Mockito.never()).execute(Mockito.anyLong());
+    }
+
+    @Test
+    @DisplayName("⭐ 重投时任务仍在 RUNNING（进程被 kill）：消息会被 ack 掉，但必须告警 + 计数")
+    void redeliveryOfInFlightTaskMustBeCounted() throws Exception {
+        // 认领失败（状态已经不是 PENDING）
+        Mockito.when(exportTaskMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.any()))
+                .thenReturn(0);
+        // 而任务当前停在 RUNNING —— 这说明上一轮投递还在跑，是**一次真实的消息丢弃**
+        ExportTask running = new ExportTask();
+        running.setId(1L);
+        running.setStatus(ExportStatus.RUNNING);
+        running.setStartedAt(LocalDateTime.now());
+        Mockito.when(exportTaskMapper.selectById(1L)).thenReturn(running);
+
+        com.rabbitmq.client.Channel channel = Mockito.mock(com.rabbitmq.client.Channel.class);
+        consumer.handle(1L, channel, 42L);
+
+        Mockito.verify(channel).basicAck(42L, false);
+        // 这才是重点：这条路径以前只有一条 INFO 日志，没人知道"停机会丢消息"
+        Mockito.verify(metrics).recordRedeliverySkippedInFlight(SqlPlatformMetrics.LINK_EXPORT);
     }
 
     @Test
@@ -117,8 +142,14 @@ class ExportConsumerIdempotencyTest {
     void executeShouldWriteSuccessResult() throws Exception {
         ExportTask task = pendingTask(1L);
         Mockito.when(exportTaskMapper.selectById(1L)).thenReturn(task);
-        Mockito.when(dbSourceService.getByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
-        Mockito.doReturn(3L).when(consumer)
+        Mockito.when(dbSourceService.getEnabledByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
+        // ⚠️ 必须**真的把临时文件写出来**：导出现在是"先写 .tmp 再原子改名"，
+        //    只返回一个数字的话，改名会因为源文件不存在而失败（测试就测不到成功路径了）。
+        Mockito.doAnswer(invocation -> {
+            File tmp = invocation.getArgument(2);
+            Files.writeString(tmp.toPath(), "v\n1\n");
+            return 3L;
+        }).when(consumer)
                 .generateCsv(ArgumentMatchers.any(), ArgumentMatchers.anyString(), ArgumentMatchers.any());
 
         consumer.execute(1L);
@@ -150,7 +181,7 @@ class ExportConsumerIdempotencyTest {
     void executeShouldMarkFailedAndCleanPartialFile() throws Exception {
         ExportTask task = pendingTask(1L);
         Mockito.when(exportTaskMapper.selectById(1L)).thenReturn(task);
-        Mockito.when(dbSourceService.getByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
+        Mockito.when(dbSourceService.getEnabledByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
         // 模拟"文件已经建出来、写到一半才失败"（不是"数据源查不到"那种还没开始写的情况）
         Mockito.doAnswer(invocation -> {
             File target = invocation.getArgument(2);
@@ -173,8 +204,12 @@ class ExportConsumerIdempotencyTest {
     void executeShouldPropagateWhenResultCannotBePersisted() throws Exception {
         ExportTask task = pendingTask(1L);
         Mockito.when(exportTaskMapper.selectById(1L)).thenReturn(task);
-        Mockito.when(dbSourceService.getByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
-        Mockito.doReturn(0L).when(consumer)
+        Mockito.when(dbSourceService.getEnabledByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
+        Mockito.doAnswer(invocation -> {
+            File tmp = invocation.getArgument(2);
+            Files.writeString(tmp.toPath(), "v\n1\n");
+            return 0L;
+        }).when(consumer)
                 .generateCsv(ArgumentMatchers.any(), ArgumentMatchers.anyString(), ArgumentMatchers.any());
         Mockito.when(exportTaskMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.any()))
                 .thenThrow(new RuntimeException("数据库不可用"));
@@ -193,8 +228,12 @@ class ExportConsumerIdempotencyTest {
                 .thenReturn(1);
         ExportTask task = pendingTask(1L);
         Mockito.when(exportTaskMapper.selectById(1L)).thenReturn(task);
-        Mockito.when(dbSourceService.getByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
-        Mockito.doReturn(0L).when(consumer)
+        Mockito.when(dbSourceService.getEnabledByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
+        Mockito.doAnswer(invocation -> {
+            File tmp = invocation.getArgument(2);
+            Files.writeString(tmp.toPath(), "v\n1\n");
+            return 0L;
+        }).when(consumer)
                 .generateCsv(ArgumentMatchers.any(), ArgumentMatchers.anyString(), ArgumentMatchers.any());
 
         com.rabbitmq.client.Channel channel = Mockito.mock(com.rabbitmq.client.Channel.class);
@@ -220,8 +259,12 @@ class ExportConsumerIdempotencyTest {
                 .thenThrow(new RuntimeException("数据库不可用"));
         ExportTask task = pendingTask(1L);
         Mockito.when(exportTaskMapper.selectById(1L)).thenReturn(task);
-        Mockito.when(dbSourceService.getByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
-        Mockito.doReturn(0L).when(consumer)
+        Mockito.when(dbSourceService.getEnabledByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
+        Mockito.doAnswer(invocation -> {
+            File tmp = invocation.getArgument(2);
+            Files.writeString(tmp.toPath(), "v\n1\n");
+            return 0L;
+        }).when(consumer)
                 .generateCsv(ArgumentMatchers.any(), ArgumentMatchers.anyString(), ArgumentMatchers.any());
 
         com.rabbitmq.client.Channel channel = Mockito.mock(com.rabbitmq.client.Channel.class);
@@ -246,8 +289,12 @@ class ExportConsumerIdempotencyTest {
                 .thenReturn(1)
                 .thenThrow(new RuntimeException("数据库不可用"));
         Mockito.when(exportTaskMapper.selectById(1L)).thenReturn(pendingTask(1L));
-        Mockito.when(dbSourceService.getByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
-        Mockito.doReturn(0L).when(consumer)
+        Mockito.when(dbSourceService.getEnabledByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
+        Mockito.doAnswer(invocation -> {
+            File tmp = invocation.getArgument(2);
+            Files.writeString(tmp.toPath(), "v\n1\n");
+            return 0L;
+        }).when(consumer)
                 .generateCsv(ArgumentMatchers.any(), ArgumentMatchers.anyString(), ArgumentMatchers.any());
 
         com.rabbitmq.client.Channel channel = Mockito.mock(com.rabbitmq.client.Channel.class);
