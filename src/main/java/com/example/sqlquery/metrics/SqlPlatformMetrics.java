@@ -56,6 +56,37 @@ public class SqlPlatformMetrics {
     /** 被执行次数上限拦下的次数。 */
     public static final String QUERY_RATE_LIMITED = "sql.query.rate_limited";
 
+    /**
+     * 被<b>并发</b>闸门拦下的次数，按原因分标签。
+     *
+     * <p>⚠️ 它和 {@link #QUERY_RATE_LIMITED} 是<b>两件事</b>，不要混：
+     * 那个是"你刷得太快"（单位时间次数），这个是"你（或这个数据源）同时在跑的太多了"。
+     * 两者的处置也不同 —— 前者让用户等一会，后者说明<b>连接池已经到顶、该扩容或限流了</b>。
+     */
+    public static final String QUERY_REJECTED = "sql.query.rejected";
+
+    /** 并发闸门表的当前大小（数据源 / 用户两张）。用来看清理逻辑有没有失效。 */
+    public static final String GUARD_GATES = "query.guard.gates";
+
+    /** 被熔断器直接拒绝的次数（没去尝试连接）。 */
+    public static final String CIRCUIT_REJECTED = "datasource.circuit.rejected";
+
+    /** 熔断器打开的次数（失败达到阈值、进入熔断）。 */
+    public static final String CIRCUIT_OPENED = "datasource.circuit.opened";
+
+    /*
+     * ⚠️ 这两个计数器**刻意不带 dataSourceId 标签**。
+     *
+     * 连接池那几个 Gauge 是带 dataSourceId 的，因为它们可以在数据源被删除时
+     * 显式注销（见 removePoolGauges）。而 **Counter 没法这样注销** ——
+     * 带上去之后，每删一个数据源就在 Prometheus 里留下一条永远不再更新、
+     * 也永远不会消失的时间线。数据源可以被反复增删，这就是一个随操作次数
+     * 增长的指标基数泄漏。
+     *
+     * "到底是哪个数据源在熔断"这个问题，看日志更合适（那里有 dataSourceId）；
+     * 指标只需要回答"现在有没有东西在熔断"。
+     */
+
     /** 数据源缓存命中 / 未命中，两者相除就是命中率。 */
     public static final String CACHE_HIT = "datasource.cache.hit";
     public static final String CACHE_MISS = "datasource.cache.miss";
@@ -154,6 +185,69 @@ public class SqlPlatformMetrics {
 
     public void recordRateLimited() {
         queryRateLimited.increment();
+    }
+
+    /**
+     * 记录一次被并发闸门拒绝。
+     *
+     * @param reason {@code per-user} / {@code per-data-source}
+     */
+    public void recordQueryRejected(String reason) {
+        registry.counter(QUERY_REJECTED, TAG_REASON, reason).increment();
+    }
+
+    /** 队列当前的消息条数，按队列名分标签。 */
+    public static final String QUEUE_DEPTH = "mq.queue.depth";
+
+    /**
+     * 把一个队列的深度注册成 Gauge。
+     *
+     * <p>⚠️ 用 <b>Gauge + Supplier</b> 而不是"定时任务读一次再写进计数器"：
+     * Gauge 的值是<b>抓取时才算</b>的，反映的是"此刻队列里有多少条"；
+     * 定时任务会把读数变成"上一次任务运行时有多少条"，中间的变化全丢了。
+     *
+     * <p>Supplier 里<b>绝不能抛异常</b> —— Broker 挂掉时让 Gauge 抛出去，
+     * 会让整个 `/actuator/prometheus` 抓取失败：从"少一个指标"变成"所有指标都没了"，
+     * 而且是在最需要指标的时候。
+     */
+    public void registerQueueDepthGauge(String queueName, java.util.function.Supplier<Number> depthSupplier) {
+        Gauge.builder(QUEUE_DEPTH, depthSupplier, supplier -> supplier.get().doubleValue())
+                .description("队列当前的消息条数")
+                .tag("queue", queueName)
+                .strongReference(true)
+                .register(registry);
+    }
+
+    /** 熔断器直接拒绝了这次请求（没有去尝试连接）。 */
+    public void recordCircuitRejected() {
+        registry.counter(CIRCUIT_REJECTED).increment();
+    }
+
+    /** 熔断器打开了（连续失败达到阈值）。 */
+    public void recordCircuitOpened() {
+        registry.counter(CIRCUIT_OPENED).increment();
+    }
+
+    /**
+     * 把并发闸门表的大小注册成 Gauge。
+     *
+     * <p>为什么要暴露一个"内部数据结构有多大"这种指标：
+     * {@code QueryConcurrencyGuard} 有一个<b>已知的清理竞态</b>（见它的类注释）——
+     * 万一清理失效、表一直涨，那是一个缓慢的内存泄漏，<b>不会有任何报错</b>。
+     * 有这个 Gauge，"表在涨"就是一条看得见的曲线，而不是等到 OOM 才知道。
+     */
+    public void registerConcurrencyGateGauges(Map<Long, ?> dataSourceGates, Map<Long, ?> userGates) {
+        Gauge.builder(GUARD_GATES, dataSourceGates, Map::size)
+                .description("按数据源的并发闸门条目数")
+                .tag("scope", "data-source")
+                .strongReference(true)
+                .register(registry);
+
+        Gauge.builder(GUARD_GATES, userGates, Map::size)
+                .description("按用户的并发闸门条目数")
+                .tag("scope", "user")
+                .strongReference(true)
+                .register(registry);
     }
 
     public void recordCacheHit() {

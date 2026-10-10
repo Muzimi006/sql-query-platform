@@ -21,8 +21,18 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class ConnectionManager {
 
-    /** 连接池上限。取 5 的理由：这是给"人工点一下执行 SQL"用的池子，不是应用自己的主库池； */
-    private static final int MAX_POOL_SIZE = 5;
+    /**
+     * 连接池上限。取 5 的理由：这是给"人工点一下执行 SQL"用的池子，不是应用自己的主库池。
+     *
+     * <p>⚠️ <b>这个值有一个下游约束</b>：{@code QueryConcurrencyGuard} 的
+     * {@code per-data-source-concurrency} 默认就取它 —— 因为闸门的目的是
+     * "在进入执行之前就拒绝"，而不是"让请求去池子门口排队"。
+     * 如果闸门许可数 <b>大于</b>池上限，多出来的那些请求还是会在
+     * {@code getConnection()} 上等满 {@code connectionTimeout}，闸门就形同虚设。
+     *
+     * <p>所以这里是 {@code public} 的：让约束在代码里看得见，而不是靠一句注释。
+     */
+    public static final int MAX_POOL_SIZE = 5;
 
     private final AesUtil aesUtil;
     private final SqlPlatformMetrics metrics;
