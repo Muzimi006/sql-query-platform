@@ -109,6 +109,23 @@ public class QueryServiceImpl implements QueryService {
             // 交给熔断器判断"这次失败算不算基础设施问题"（它只认真实连接故障）
             circuitBreaker.recordFailure(dto.getDataSourceId(), e);
             throw e;
+        } catch (Exception e) {
+            // ⭐ 这一条是第六轮补的，它修的是一个"熔断器根本不知道"的盲区：
+            //
+            // 数据源连不上时，**连接池是在第一次 getConnection 时才创建的**（惰性），
+            // 而 HikariCP 创建池失败抛的是 PoolInitializationException（RuntimeException，
+            // 不属于 java.sql 体系）。它以前会直接穿过上面那个 catch (BusinessException)，
+            // 一路冒到全局兜底，后果有两个：
+            //   ① 熔断器**从来没被告知**这个数据源连不上 → 连续失败永远不计数 → 永远不打开；
+            //   ② 用户每次拿到的是"系统异常"，而真实原因是"这个库连不上"。
+            // 实测证据见 DbSourceCircuitBreakerIntegrationTest（毫秒级对比）。
+            boolean infrastructureFailure =
+                    circuitBreaker.recordFailureAndClassify(dto.getDataSourceId(), e);
+            if (infrastructureFailure) {
+                throw new BusinessException(
+                        "该数据源当前不可用（连接失败），请检查数据源配置或稍后重试", e);
+            }
+            throw e;
         } finally {
             // 必须在 finally 里放：中途任何一条路径抛出（数据源不存在、校验不通过、SQL 报错）
             // 都要把许可还回去，否则这个用户/数据源的许可会被永久泄漏 ——

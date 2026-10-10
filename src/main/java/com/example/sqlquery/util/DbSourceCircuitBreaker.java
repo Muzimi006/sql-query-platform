@@ -138,6 +138,27 @@ public class DbSourceCircuitBreaker {
     }
 
     /**
+     * 记录失败，**并告诉调用方这算不算基础设施失败**。
+     *
+     * <p>为什么需要它（第六轮补）：{@code QueryServiceImpl} 的 catch 以前只接 {@code BusinessException}，
+     * 而**连接池创建失败**（Hikari 的 {@code PoolInitializationException}）是个 {@code RuntimeException} ——
+     * 它会直接穿到全局兜底，于是熔断器**完全不知道这个数据源连不上**：
+     * 每次请求都要重新等满建连超时，熔断永远不打开。
+     *
+     * <p>调用方拿到 {@code true} 之后可以做两件事：记一次失败（本方法已经做了）、
+     * 并且给用户一句**说得通的话**（而不是"系统异常"）。
+     *
+     * @return 这次失败是否属于"数据源本身的问题"
+     */
+    public boolean recordFailureAndClassify(Long dataSourceId, Throwable error) {
+        if (!isInfrastructureFailure(error)) {
+            return false;
+        }
+        recordFailure(dataSourceId, error);
+        return true;
+    }
+
+    /**
      * 这一次打失败了。<b>只有"连接类"失败才计入熔断</b> —— 见类注释里那张表。
      */
     public void recordFailure(Long dataSourceId, Throwable error) {
