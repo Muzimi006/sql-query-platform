@@ -3,6 +3,9 @@ package com.example.sqlquery.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.example.sqlquery.common.DbSourceStatus;
 import com.example.sqlquery.common.ReviewStatus;
+import com.example.sqlquery.common.UndoStatus;
+import com.example.sqlquery.entity.SqlReviewUndo;
+import com.example.sqlquery.mapper.SqlReviewUndoMapper;
 import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.config.RabbitConfig;
 import com.example.sqlquery.dto.DbSourceDTO;
@@ -77,6 +80,9 @@ class SqlReviewWorkflowIntegrationTest {
 
     @Autowired
     private SqlReviewRequestMapper reviewMapper;
+
+    @Autowired
+    private SqlReviewUndoMapper undoMapper;
 
     @Autowired
     private DbSourceService dbSourceService;
@@ -253,6 +259,20 @@ class SqlReviewWorkflowIntegrationTest {
         assertNotNull(executed.getExecutedAt(), "执行时间必须留痕");
         assertEquals(1L, executed.getAffectedRows(), "影响行数必须回写到工单上");
         assertEquals(1, readProbeValue(), "写语句必须真的生效");
+
+        // ---- ⭐ 前镜像留存：这是「批错了怎么办」的唯一依据 ----
+        // 这条断言走的是**完整的消费者路径**（MQ → 认领 → 取像 → 执行 → 落库），
+        // 而 SqlUndoRecorderTest 那 15 条单测只验了生成逻辑。两者都要有：
+        // 单测证明「语句长什么样」，这里证明「接线真的通了」。
+        SqlReviewUndo undo = undoMapper.selectById(submitted.getId());
+        assertNotNull(undo, "执行成功后必须有前镜像留存记录");
+        assertEquals(UndoStatus.CAPTURED, undo.getCaptureStatus());
+        assertEquals(PROBE_TABLE, undo.getTableName());
+        assertEquals(1, undo.getRowCount(), "只改了一行，就只该留一行的前镜像");
+        assertNotNull(undo.getBeforeJson(), "前镜像不能为空");
+        assertNotNull(undo.getInverseSql(), "必须生成反向 SQL（那就是回滚依据）");
+        assertTrue(undo.getInverseSql().contains("UPDATE"),
+                "这条语句是 UPDATE，反向语句也应该是 UPDATE。实际：" + undo.getInverseSql());
 
         // ---- 重复投递：MQ 是「至少一次」，同一条消息出现两次是正常情况 ----
         UserContext.clear();
