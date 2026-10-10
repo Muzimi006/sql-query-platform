@@ -141,6 +141,19 @@
 			<groupId>io.micrometer</groupId>
 			<artifactId>micrometer-registry-prometheus</artifactId>
 		</dependency>
+
+		<!-- 接口文档（OpenAPI 3 + Swagger UI）。
+		     ⚠️ 版本必须跟 Spring Boot 的大版本走：springdoc 2.x 面向 Boot 3，
+		     3.x 面向 Boot 4（3.1.1 的父 pom 就是 spring-boot-starter-parent:4.1.0）。
+		     装 2.x 会以"Bean 创建失败 / 类找不到"的形式崩在启动阶段。
+		     ⚠️ 它会暴露全部接口的面貌（路径、参数、DTO 字段），
+		     而 /v3/api-docs 与 /swagger-ui 都不在 /api/** 下 —— 也就是**不受 JwtInterceptor 保护**。
+		     生产部署请用 springdoc.api-docs.enabled=false 关掉，见 application.yml 的注释。 -->
+		<dependency>
+			<groupId>org.springdoc</groupId>
+			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+			<version>3.1.1</version>
+		</dependency>
 	</dependencies>
 
 	<build>
