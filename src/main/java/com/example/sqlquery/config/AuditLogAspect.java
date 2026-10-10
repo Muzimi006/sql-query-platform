@@ -5,6 +5,10 @@ import com.example.sqlquery.entity.AuditLog;
 import com.example.sqlquery.exception.RejectedBeforeWorkException;
 import com.example.sqlquery.mapper.AuditLogMapper;
 import com.example.sqlquery.metrics.SqlPlatformMetrics;
+import com.example.sqlquery.tx.PlatformWrite;
+import com.example.sqlquery.tx.PlatformWriteBuffer;
+import com.example.sqlquery.tx.PlatformWriteFlusher;
+import java.util.List;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -60,10 +64,15 @@ public class AuditLogAspect {
 
     private final AuditLogMapper auditLogMapper;
     private final SqlPlatformMetrics metrics;
+    private final PlatformWriteBuffer writeBuffer;
+    private final PlatformWriteFlusher writeFlusher;
 
-    public AuditLogAspect(AuditLogMapper auditLogMapper, SqlPlatformMetrics metrics) {
+    public AuditLogAspect(AuditLogMapper auditLogMapper, SqlPlatformMetrics metrics,
+                          PlatformWriteBuffer writeBuffer, PlatformWriteFlusher writeFlusher) {
         this.auditLogMapper = auditLogMapper;
         this.metrics = metrics;
+        this.writeBuffer = writeBuffer;
+        this.writeFlusher = writeFlusher;
     }
 
     @Around("execution(* com.example.sqlquery.controller..*(..))")
@@ -77,11 +86,14 @@ public class AuditLogAspect {
             return joinPoint.proceed();
         }
 
-        String outcome;
+        // ⭐ 由最外层开启「平台库写收集」：请求结束时（finally）把审计与查询历史**一次提交**。
+        //    背景：一次查询请求原本写两张表、各自提交 = 2 次提交 = 4 次 fsync（双1，口径见档案 G-08）；合并后是 1 次提交。
+        //    为什么「减少提交次数」比「关掉双1」划算，见 PlatformWrite 的类注释（有实测数字）。
+        boolean owner = writeBuffer.begin();
+
         try {
             Object result = joinPoint.proceed();
-            outcome = "SUCCESS";
-            record(userId(), request, joinPoint, outcome);
+            enqueue(userId(), request, joinPoint, "SUCCESS");
             return result;
         } catch (RejectedBeforeWorkException e) {
             // ⭐ 这一条就是一个资源都没碰到就被拒的请求。
@@ -91,30 +103,58 @@ public class AuditLogAspect {
                     request.getRequestURI(), e.getMessage());
             throw e;
         } catch (Throwable t) {
-            outcome = "FAILED:" + t.getClass().getSimpleName();
-            record(userId(), request, joinPoint, outcome);
+            enqueue(userId(), request, joinPoint, "FAILED:" + t.getClass().getSimpleName());
             throw t;
+        } finally {
+            // ⚠️ 必须在 finally 里收尾：成功、业务失败、被拒绝三条路径都要把缓冲清掉。
+            //    Tomcat 线程池会复用线程，残留会被带到下一个请求上（那种 bug 极难复现）。
+            if (owner) {
+                try {
+                    List<PlatformWrite> writes = writeBuffer.drain();
+                    if (!writes.isEmpty()) {
+                        writeFlusher.flush(writes);
+                    }
+                } finally {
+                    writeBuffer.end();
+                }
+            }
         }
     }
 
-    /** 写一条审计（失败不影响业务，见下方注释）。 */
-    private void record(Long userId, HttpServletRequest request, ProceedingJoinPoint joinPoint,
-                        String outcome) {
-        try {
-            AuditLog auditLog = new AuditLog();
-            auditLog.setUserId(userId);
-            auditLog.setAction(request.getMethod());
-            auditLog.setDetail(request.getRequestURI() + " -> "
-                    + joinPoint.getSignature().toShortString() + " [" + outcome + "]");
-            auditLog.setIp(request.getRemoteAddr());
-            auditLogMapper.insert(auditLog);
-        } catch (Exception e) {
-            // ⚠️ 审计写入失败会造出一个**无声的安全审计缺口**：
-            //    业务照样成功，而「谁在什么时候做了什么」没了。
-            //    光有日志不够（日志会轮转），必须有一个可告警的计数器。
-            metrics.recordAuditWriteFailed();
-            log.error("审计日志写入失败", e);
-        }
+    /**
+     * 把这一条审计**收集起来**（不立刻写库），等请求结束时与其它平台库写一起提交。
+     *
+     * <p>写库动作被包进 {@link PlatformWrite}：失败时记 {@code audit.write.failed} 并打 ERROR ——
+     * 那是一个**无声的安全审计缺口**（业务照样成功，而「谁在什么时候做了什么」没了），
+     * 光有日志不够（日志会轮转），必须有一个可告警的计数器。
+     */
+    private void enqueue(Long userId, HttpServletRequest request, ProceedingJoinPoint joinPoint,
+                         String outcome) {
+        AuditLog auditLog = new AuditLog();
+        auditLog.setUserId(userId);
+        auditLog.setAction(request.getMethod());
+        auditLog.setDetail(request.getRequestURI() + " -> "
+                + joinPoint.getSignature().toShortString() + " [" + outcome + "]");
+        auditLog.setIp(request.getRemoteAddr());
+
+        writeBuffer.add(new PlatformWrite() {
+            @Override
+            public String name() {
+                return "audit_log";
+            }
+
+            @Override
+            public void write() {
+                auditLogMapper.insert(auditLog);
+            }
+
+            @Override
+            public void onFailure(Exception cause) {
+                metrics.recordAuditWriteFailed();
+                log.error("审计日志写入失败（期间业务已按成功处理）", cause);
+            }
+        });
+
         log.info("审计日志 - 用户:{}, 请求方式:{}, 地址:{}, 方法:{}, 结果:{}",
                 userId,
                 request.getMethod(),

@@ -45,6 +45,11 @@
 - `management.server.address`、审计、限流等既有行为**均未改变对外契约**（HTTP 200 + 业务 code 不变）。
 
 ### 修复
+- ⭐ **合并写：一次查询请求的主库提交从 2 次降到 1 次**（还清档案 G-08 记的那笔债）：
+  审计与查询历史由请求级写缓冲收集、在**一个事务**里提交（用保存点保证两条写互不牵连）。
+  实测：一次请求 = 一次合并提交、提交里带两条写；反向验证：改回直接提交 → `expected: <2> but was: <1>`。
+  新增指标 `platform.write.flush` / `platform.write.flushed{outcome}`（合并是否真的在工作，生产可观测）。
+  ⚠️ 代价：写被推迟到请求结束（毫秒级窗口）；缓冲只在当前线程有效（定时任务/MQ 消费者直接写库）。
 - ⭐ **数据源连不上时熔断器不再「不知道」**：连接池创建失败抛的是 HikariCP 的
   `PoolInitializationException`（RuntimeException），它会穿过原先只接 `BusinessException` 的 catch ——
   后果是①**熔断器永远不打开**（每次请求都重新等满 5 秒建连超时）②用户拿到的是「系统异常」。

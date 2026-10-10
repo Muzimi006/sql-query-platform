@@ -295,6 +295,31 @@ public class SqlPlatformMetrics {
      */
     public static final String ACK_FAILED = "mq.ack.failed";
 
+    /**
+     * 平台库写的**合并提交**次数，以及每次提交带上了几条写。
+     *
+     * <p>这两个计数器是「合并写真的生效了」唯一可靠的证据：
+     * 一次查询请求应当表现为 <b>flush +1 / items +2</b>（审计 + 历史在同一个事务里）。
+     *
+     * <p>⚠️ 为什么不用 MySQL 的 `Com_commit` 来量：它只统计**客户端显式发的 COMMIT**，
+     * 自动提交下的单条 INSERT 是**隐式提交**、不计入 —— 于是「合并了」和「没合并」在它眼里都是 1。
+     * 而 `Handler_commit` 虽然是引擎内部计数，但它**是全局的**，会被其它线程的提交干扰
+     * （实测同一次请求在两个状态下分别是 1 和 7，噪声太大）。
+     */
+    public static final String WRITE_FLUSH = "platform.write.flush";
+
+    /** 被合并提交的写条数（按成败分）。 */
+    public static final String WRITE_FLUSHED_ITEMS = "platform.write.flushed";
+
+    public void recordWriteFlush(int items, int succeeded) {
+        registry.counter(WRITE_FLUSH).increment();
+        registry.counter(WRITE_FLUSHED_ITEMS, TAG_OUTCOME, OUTCOME_SUCCESS).increment(succeeded);
+        if (items > succeeded) {
+            registry.counter(WRITE_FLUSHED_ITEMS, TAG_OUTCOME, OUTCOME_FAILED)
+                    .increment(items - succeeded);
+        }
+    }
+
     public void recordAckFailed(String link) {
         registry.counter(ACK_FAILED, TAG_LINK, link).increment();
     }

@@ -5,6 +5,9 @@ import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.exception.RejectedBeforeWorkException;
 import com.example.sqlquery.mapper.AuditLogMapper;
 import com.example.sqlquery.metrics.SqlPlatformMetrics;
+import com.example.sqlquery.tx.PlatformWrite;
+import com.example.sqlquery.tx.PlatformWriteBuffer;
+import com.example.sqlquery.tx.PlatformWriteFlusher;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -50,10 +53,34 @@ class AuditLogAspectTest {
     private ProceedingJoinPoint joinPoint;
     private HttpServletRequest request;
 
+    /** 真的用仓库里那个写缓冲（它没有依赖，可以直接 new）。 */
+    private PlatformWriteBuffer writeBuffer;
+
     @BeforeEach
     void setUp() {
         auditLogMapper = Mockito.mock(AuditLogMapper.class);
-        aspect = new AuditLogAspect(auditLogMapper, metrics);
+        writeBuffer = new PlatformWriteBuffer();
+
+        // ⚠️ flusher 用替身：真实的那个要跑在事务里（TransactionAspectSupport 需要活动事务），
+        //    纯单元测试里没有事务上下文。替身的行为与真实实现一致：**把收集到的写逐条执行**，
+        //    失败了就交给这条写自己记账。真正的"一个事务提交 + 保存点隔离"由集成用例覆盖
+        //    （PlatformWriteMergeIntegrationTest，它量的是 MySQL 的 Com_commit）。
+        PlatformWriteFlusher flusher = Mockito.mock(PlatformWriteFlusher.class);
+        Mockito.when(flusher.flush(Mockito.anyList())).thenAnswer(invocation -> {
+            java.util.List<PlatformWrite> writes = invocation.getArgument(0);
+            int succeeded = 0;
+            for (PlatformWrite write : writes) {
+                try {
+                    write.write();
+                    succeeded++;
+                } catch (Exception e) {
+                    write.onFailure(e);
+                }
+            }
+            return succeeded;
+        });
+
+        aspect = new AuditLogAspect(auditLogMapper, metrics, writeBuffer, flusher);
 
         request = Mockito.mock(HttpServletRequest.class);
         Mockito.when(request.getRequestURI()).thenReturn("/api/query/execute");
@@ -69,6 +96,18 @@ class AuditLogAspectTest {
     @AfterEach
     void tearDown() {
         RequestContextHolder.resetRequestAttributes();
+    }
+
+    /**
+     * ⭐ 缓冲必须被清干净。
+     *
+     * <p>它挂在 ThreadLocal 上，而 Tomcat 的线程是**会被复用**的 ——
+     * 漏清理的后果是「上一个请求的审计被算到下一个请求上」，而且极难复现。
+     * 所以这条断言不是形式主义。
+     */
+    private void assertBufferCleaned() {
+        org.junit.jupiter.api.Assertions.assertFalse(writeBuffer.isActive(),
+                "请求结束后写缓冲必须被清理（ThreadLocal 会被线程复用）");
     }
 
     private double skipped() {
@@ -92,6 +131,7 @@ class AuditLogAspectTest {
         assertEquals("ok", aspect.auditWriteRequest(joinPoint));
 
         Mockito.verifyNoInteractions(auditLogMapper);
+        assertBufferCleaned();
     }
 
     @Test
@@ -104,6 +144,7 @@ class AuditLogAspectTest {
 
         assertTrue(capturedDetail().endsWith("[SUCCESS]"),
                 "审计必须记下结果 —— 写在操作之前的记录在失败时记的是一件没发生的事");
+        assertBufferCleaned();
     }
 
     @Test
@@ -134,6 +175,7 @@ class AuditLogAspectTest {
         Mockito.verifyNoInteractions(auditLogMapper);
         assertEquals(1.0, skipped(),
                 "「不写」必须留计数，否则说不出为什么少了一条审计");
+        assertBufferCleaned();
     }
 
     @Test
@@ -148,5 +190,6 @@ class AuditLogAspectTest {
 
         // 业务不受影响，但缺口必须有可告警的信号（这里用的是真指标注册表，不是 mock）
         assertEquals(1.0, registry.find(SqlPlatformMetrics.AUDIT_WRITE_FAILED).counter().count());
+        assertBufferCleaned();
     }
 }
