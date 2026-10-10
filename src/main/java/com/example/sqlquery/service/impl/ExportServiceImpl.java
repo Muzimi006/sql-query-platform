@@ -9,6 +9,7 @@ import com.example.sqlquery.dto.ExportTaskDTO;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.entity.ExportTask;
 import com.example.sqlquery.exception.BusinessException;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import com.example.sqlquery.mapper.ExportTaskMapper;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.service.ExportService;
@@ -34,15 +35,18 @@ public class ExportServiceImpl implements ExportService {
     private final DbSourceService dbSourceService;
     private final RabbitTemplate rabbitTemplate;
     private final SqlPermissionService sqlPermissionService;
+    private final SqlPlatformMetrics metrics;
 
     public ExportServiceImpl(ExportTaskMapper exportTaskMapper,
                              DbSourceService dbSourceService,
                              RabbitTemplate rabbitTemplate,
-                             SqlPermissionService sqlPermissionService) {
+                             SqlPermissionService sqlPermissionService,
+                             SqlPlatformMetrics metrics) {
         this.exportTaskMapper = exportTaskMapper;
         this.dbSourceService = dbSourceService;
         this.rabbitTemplate = rabbitTemplate;
         this.sqlPermissionService = sqlPermissionService;
+        this.metrics = metrics;
     }
 
     @Override
@@ -86,6 +90,7 @@ public class ExportServiceImpl implements ExportService {
             // **导出没有补偿重投** —— 重跑会覆盖同一个文件名，中途中断留下的半成品
             // 和重跑的结果无法区分（见 ExportTaskRecoveryJob 的类注释）。
             // 所以这里只能现在就把它标失败，并给用户一句能看懂的话。
+            metrics.recordPublishFailure(SqlPlatformMetrics.LINK_EXPORT);
             log.error("导出任务创建后投递失败，已立即标记为失败。taskId={}", task.getId(), e);
             exportTaskMapper.update(null, new LambdaUpdateWrapper<ExportTask>()
                     .eq(ExportTask::getId, task.getId())

@@ -188,6 +188,43 @@ class SqlPlatformMetricsTest {
      * 而本用例要验的是"读数有没有从 MXBean 透传到 Gauge"，
      * 与真实连接没有任何关系。
      */
+    @Test
+    @DisplayName("⭐ 投递失败按链路分标签 —— 两条链路的处置不同，指标更不能混")
+    void publishFailureShouldBeTaggedByLink() {
+        // 为什么值得单独钉一条：这两个计数器是「Broker 出问题了」唯一可靠的观测点。
+        // 两条链路对失败的处置完全相反（工单吞掉等补偿重投 / 导出立刻标失败），
+        // 混成一个 counter 的话，看板上只能看到「投递失败 3 次」，
+        // 而不知道该去查工单的 APPROVED 积压还是导出的失败任务。
+        metrics.recordPublishFailure(SqlPlatformMetrics.LINK_REVIEW);
+        metrics.recordPublishFailure(SqlPlatformMetrics.LINK_REVIEW);
+        metrics.recordPublishFailure(SqlPlatformMetrics.LINK_EXPORT);
+
+        assertEquals(2.0, registry.get(SqlPlatformMetrics.PUBLISH_FAILED)
+                .tag("link", SqlPlatformMetrics.LINK_REVIEW).counter().count());
+        assertEquals(1.0, registry.get(SqlPlatformMetrics.PUBLISH_FAILED)
+                .tag("link", SqlPlatformMetrics.LINK_EXPORT).counter().count());
+    }
+
+    @Test
+    @DisplayName("投递失败计数器天然可告警：初始必须为 0，且不会被别的路径误增")
+    void publishFailureShouldStartAtZero() {
+        // 「持续大于 0 就是 Broker 出问题了」——这句告警规则要成立，
+        // 前提是**正常运行时它必须稳定在 0**。
+        // 这里顺带钉住它不会被别的路径误增：跑一遍其它指标方法，它必须纹丝不动。
+        metrics.recordQuerySuccess(10);
+        metrics.recordQueryFailure(10);
+        metrics.recordQueryTruncated();
+        metrics.recordRateLimited();
+        metrics.recordQueryRejected("per-user");
+        metrics.recordCircuitRejected();
+        metrics.recordCircuitOpened();
+        metrics.recordCacheHit();
+        metrics.recordCacheMiss();
+        metrics.recordConsumerRetry("export.queue");
+
+        assertNull(registry.find(SqlPlatformMetrics.PUBLISH_FAILED).counter(),
+                "没有任何投递失败时，这个计数器不该存在（更不该大于 0）");
+    }
     private HikariDataSource newPool(int active, int idle, int total, int waiting) {
         HikariPoolMXBean bean = org.mockito.Mockito.mock(HikariPoolMXBean.class);
         org.mockito.Mockito.when(bean.getActiveConnections()).thenReturn(active);

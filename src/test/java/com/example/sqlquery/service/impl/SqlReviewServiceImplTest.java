@@ -13,6 +13,7 @@ import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.entity.SqlReviewRequest;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.mapper.SqlReviewRequestMapper;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.service.SqlImpactAnalyzer;
 import com.example.sqlquery.service.SqlPermissionService;
@@ -59,6 +60,7 @@ class SqlReviewServiceImplTest {
     private SqlPermissionService permissionService;
     private SqlImpactAnalyzer impactAnalyzer;
     private RabbitTemplate rabbitTemplate;
+    private SqlPlatformMetrics metrics;
     private SqlReviewServiceImpl service;
 
     private static final Set<SqlType> REVIEWABLE =
@@ -74,9 +76,10 @@ class SqlReviewServiceImplTest {
         permissionService = Mockito.mock(SqlPermissionService.class);
         impactAnalyzer = Mockito.mock(SqlImpactAnalyzer.class);
         rabbitTemplate = Mockito.mock(RabbitTemplate.class);
+        metrics = Mockito.mock(SqlPlatformMetrics.class);
 
         service = new SqlReviewServiceImpl(
-                reviewMapper, dbSourceService, permissionService, impactAnalyzer, rabbitTemplate);
+                reviewMapper, dbSourceService, permissionService, impactAnalyzer, rabbitTemplate, metrics);
 
         UserContext.set(1L);
         UserContext.setRole(UserRole.USER);
@@ -353,6 +356,12 @@ class SqlReviewServiceImplTest {
         // 用一个假的失败去描述一次真的成功，比什么都不说更糟。
         // 工单停在 APPROVED（准确的状态描述），由 SqlReviewRecoveryJob 重投。
         service.approve(9L, 1L, null);
+
+        // ⭐ 但"不抛异常"不等于"这件事没发生" ——
+        //    接口返回 200、工单老老实实停在 APPROVED，从外面看一切正常。
+        //    只有这个持续大于 0 的计数器能把"Broker 出问题了"暴露出来。
+        //    在它之前，唯一的痕迹是一条 ERROR 日志（代码里自己写着"应该配一个计数器"）。
+        Mockito.verify(metrics).recordPublishFailure(SqlPlatformMetrics.LINK_REVIEW);
     }
 
     @Test

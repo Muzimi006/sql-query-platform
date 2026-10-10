@@ -15,6 +15,7 @@ import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.entity.SqlReviewRequest;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.exception.SqlTypeNotAllowedException;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import com.example.sqlquery.mapper.SqlReviewRequestMapper;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.service.SqlImpactAnalyzer;
@@ -59,17 +60,20 @@ public class SqlReviewServiceImpl implements SqlReviewService {
     private final SqlPermissionService sqlPermissionService;
     private final SqlImpactAnalyzer impactAnalyzer;
     private final RabbitTemplate rabbitTemplate;
+    private final SqlPlatformMetrics metrics;
 
     public SqlReviewServiceImpl(SqlReviewRequestMapper reviewMapper,
                                 DbSourceService dbSourceService,
                                 SqlPermissionService sqlPermissionService,
                                 SqlImpactAnalyzer impactAnalyzer,
-                                RabbitTemplate rabbitTemplate) {
+                                RabbitTemplate rabbitTemplate,
+                                SqlPlatformMetrics metrics) {
         this.reviewMapper = reviewMapper;
         this.dbSourceService = dbSourceService;
         this.sqlPermissionService = sqlPermissionService;
         this.impactAnalyzer = impactAnalyzer;
         this.rabbitTemplate = rabbitTemplate;
+        this.metrics = metrics;
     }
 
     /**
@@ -318,8 +322,9 @@ public class SqlReviewServiceImpl implements SqlReviewService {
      * 所以正确的做法是记一条 error 日志、让审批接口正常返回，
      * 由补偿任务兜底。
      *
-     * <p>📌 已知的改进点：这条 error 日志目前只有人看得见，
-     * 应该配一个计数器 + 告警（"批准成功但投递失败"的次数持续大于 0 就是 Broker 出问题了）。
+     * <p>✅ 原来这里写的是「📌 已知的改进点：这条 error 日志只有人看得见，应该配一个计数器」。
+     * 现在配上了：{@code mq_publish_failed{link=review}}。
+     * **持续大于 0 就是 Broker 出问题了** —— 这句话本身就是告警规则。
      *
      * <p>带上 {@link CorrelationData}：开着 publisher confirm 时，
      * Broker 的确认/否定通过它回调回来（见 {@code RabbitConfirmConfig}）。
@@ -332,6 +337,10 @@ public class SqlReviewServiceImpl implements SqlReviewService {
             // 捕 Exception 而不是 AmqpException：这条路径的全部语义就是
             // 「绝不把异常抛给审批人」。写成具体子类的话，
             // 将来一旦抛的是别的类型，这个承诺就静默失效了。
+            // 先记指标再打日志：指标是给告警用的，日志是给人排查用的，两者都不能少。
+            // 这件事"看起来一切正常"（接口返回 200、工单老老实实停在 APPROVED），
+            // 所以只有一个持续大于 0 的计数器能把它暴露出来。
+            metrics.recordPublishFailure(SqlPlatformMetrics.LINK_REVIEW);
             log.error("工单已批准但投递执行消息失败，工单将停在 APPROVED，"
                     + "由 SqlReviewRecoveryJob 补偿重投。reviewId={}", reviewId, e);
         }

@@ -114,6 +114,7 @@ public class SqlPlatformMetrics {
 
     private static final String TAG_OUTCOME = "outcome";
     private static final String TAG_DATA_SOURCE = "dataSourceId";
+    private static final String TAG_LINK = "link";
 
     private static final String OUTCOME_SUCCESS = "success";
     private static final String OUTCOME_FAILED = "failed";
@@ -234,6 +235,46 @@ public class SqlPlatformMetrics {
      */
     public void recordConsumerRetry(String queueName) {
         registry.counter(CONSUMER_RETRY, "queue", queueName).increment();
+    }
+
+    /**
+     * **生产者侧**投递失败的次数，按链路分标签。
+     *
+     * <h2>为什么必须有这个计数器</h2>
+     *
+     * <p>在这之前，"投递失败"唯一的痕迹是一条 ERROR 日志。而两个业务侧对它的处置完全相反：
+     *
+     * <ul>
+     *   <li><b>工单链路</b>：吞掉异常、让审批接口正常返回，工单停在 APPROVED，
+     *       由 {@code SqlReviewRecoveryJob} 补偿重投；</li>
+     *   <li><b>导出链路</b>：立刻把任务标 FAILED 并给用户一句能看懂的话
+     *       （导出没有补偿重投 —— 重跑会覆盖同一个文件名，中途中断留下的半成品
+     *       和重跑的结果无法区分）。</li>
+     * </ul>
+     *
+     * <p>两种处置都对，但**共同点是失败之后系统仍然"看起来正常"**：
+     * 一个接口返回 200、一个返回明确的业务提示，队列里就是少了一条消息。
+     * 没有计数器的话，"Broker 出问题了"这件事只能靠人翻日志发现 ——
+     * 而这个项目里已经有两次"日志里写了但没人看"的教训。
+     *
+     * <p>⚠️ 它和 publisher confirm 回调（{@code RabbitConfirmConfig}）**不是一回事**：
+     * 这里记的是"调用就抛了异常"（连接不上、channel 关闭），
+     * 回调处理的是"调用成功了但 Broker 后来否认"（异步）。两者互补，都要。
+     */
+    public static final String PUBLISH_FAILED = "mq.publish.failed";
+
+    /** 投递失败的链路标签值。用常量而不是字符串字面量，避免指标和告警规则对不上。 */
+    public static final String LINK_EXPORT = "export";
+
+    public static final String LINK_REVIEW = "review";
+
+    /**
+     * 记录一次生产者侧投递失败。
+     *
+     * @param link {@link #LINK_EXPORT} 或 {@link #LINK_REVIEW}
+     */
+    public void recordPublishFailure(String link) {
+        registry.counter(PUBLISH_FAILED, TAG_LINK, link).increment();
     }
 
     /** 熔断器直接拒绝了这次请求（没有去尝试连接）。 */
