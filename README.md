@@ -459,8 +459,10 @@ CSV 导出编码、导出文件清理、数据源入口与状态校验、并发�
 > **不是数据**（业务接口仍然要 JWT）。生产环境请用
 > `SPRINGDOC_ENABLED=false` 关掉，理由见 application.yml 里的注释。
 >
-> ⚠️ 另一个坑：**springdoc 版本必须跟 Spring Boot 的大版本走**（2.x → Boot 3，**3.x → Boot 4**）。
-> 装错不会编译失败，会在启动阶段以"Bean 创建失败"的形式崩掉。
+> ⚠️ 另一个坑：**springdoc 版本必须跟 Spring Boot 的大版本走** ——
+> 本项目的依赖是 `org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.1`
+> （2.x 面向 Boot 3，**3.x 面向 Boot 4**）。
+> 装错**不会编译失败**，会在启动阶段以"Bean 创建失败 / 类找不到"的形式崩掉。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
