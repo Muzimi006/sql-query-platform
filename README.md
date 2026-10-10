@@ -421,8 +421,8 @@ docker compose up -d redis rabbitmq postgres
 > 只写 `-Dgroups=integration` 的话，一条集成用例都不会跑，却会显示 BUILD SUCCESS。
 > 现在排除项已改成属性（`surefire.excludedGroups`），所以清空它就能放行。
 
-当前共 **315 个用例**：纯单元层 **289 个**（`mvn test`，不依赖任何中间件），
-另外 **26 个**打了 `integration` 标签、默认不跑。集成用例覆盖：
+当前共 **319 个用例**：纯单元层 **289 个**（`mvn test`，不依赖任何中间件），
+另外 **30 个**打了 `integration` 标签、默认不跑。集成用例覆盖：
 MyBatis-Plus 装配与分页、导出的幂等与卡单补偿、**真实 PostgreSQL 下的双方言行为**、
 写语句执行与角色权限、**审核工单的端到端链路**（提交 → 审批 → MQ → 执行 → 留痕）。
 
@@ -446,6 +446,9 @@ CSV 导出编码、导出文件清理、数据源入口与状态校验、并发�
 工单补偿任务（重投 vs 判失败、绝不自动重试）、影响面预估的**文案**（扫描行数 ≠ 影响行数）、
 表结构读取的三个上限与截断说明、自然语言生成（AI 无特权 / 哨兵 / 提示词 / 代码围栏剥离）、
 以及一条**全项目级**的结构性守卫：任何 `@RequestBody` 参数少了 `@Valid` 都直接变红。
+还有一条跑在**真实 RabbitMQ** 上的死信链路用例：自己 `basicGet` 再 `basicNack(false,false)`，
+断言消息**真的出现在自己的 `export.dlq` / `review.dlq` 里、且没有串到另一条链路**，
+并验证 `mq_queue_depth` 指标确实指向对的队列。
 
 这一轮补上的：队列容量参数与**双死信链路隔离**、**消息体是 JSON 而不是 JDK 序列化**
 （含「默认转换器的产物确实以 Java 序列化魔数 `0xAC` 开头」这条对照断言）、
@@ -550,6 +553,10 @@ CSV 导出编码、导出文件清理、数据源入口与状态校验、并发�
    #    确认方式：
    docker exec sql-query-rabbitmq rabbitmqctl list_queues name arguments
    ```
+
+   ⚠️ **死信链路的最后一跳是整条可靠性链条上唯一没有兜底的地方**：被 `nack` 的消息由 **Broker**
+   送去死信交换机，所以 `mandatory` + returns 回调那一套**在这里不生效** ——
+   路由键写错时消息既不报错也不退回，**直接静默丢弃**。（这是做反向验证时确认的，见档案 G-02。）
 
    ⚠️ 第二步同时也是**消息格式的切换点**：消息体现在是 JSON（`Jackson2JsonMessageConverter`）而不是 JDK 序列化。
    删队列之前**请先确认队列是空的**，否则里面那些 JDK 序列化的旧消息会被新消费者反序列化失败 → nack → 进死信。
