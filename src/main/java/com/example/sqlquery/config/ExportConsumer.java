@@ -348,7 +348,7 @@ public class ExportConsumer {
                 .set(ExportTask::getErrorMessage, errorMessage)
                 .set(ExportTask::getFinishedAt, LocalDateTime.now()));
         // 注：ExportTask 实体没有 updatedAt 字段（表里有，但实体没映射），
-        // 而导出的卡死判定用的是 created_at，所以这里不需要显式写时间戳 ——
+        // 而导出的卡死判定用的是 started_at（认领时刻，见 ExportTaskRecoveryJob），
         // 和工单链路（那个必须显式写，因为判定用的是 updated_at）不同。
 
         if (affected == 0) {
