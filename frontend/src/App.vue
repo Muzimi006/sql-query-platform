@@ -7,7 +7,22 @@ import { clearToken, getUser, isLoggedIn } from './auth'
 const route = useRoute()
 const router = useRouter()
 
-// computed 是「派生状态」：依赖变化时自动重算，不用手动同步
+// computed 是「派生状态」：依赖变化时自动重算，不用手动同步。
+//
+// ⚠️ 这一行踩过一个很容易忽略的坑，改它之前先读完这段注释：
+//
+// 它原本依赖两样东西 —— isLoggedIn()（读 localStorage）和 route.name。
+// 但 **localStorage 不是响应式的**，而且 isLoggedIn() && route.name !== 'login'
+// 里的 **&& 是短路的**：首次求值发生在 /login 且还没 token，左边为假，
+// **右边根本没执行** —— 于是这个 computed 一个响应式依赖都没登记，
+// 算过一次 false 之后就永远不会再算。
+//
+// 症状非常具有迷惑性：**登录成功、路由也跳到了 /query，但顶栏就是不出现，
+// 手动刷新一下又好了**（刷新后首次求值就带着 token，走的是另一条路径）。
+//
+// 根治在 auth.js：把 token 放进 ref，让 isLoggedIn() 读到响应式的值。
+// 放在这里修（比如把两个条件换个顺序）也能好，但那是"碰巧"——
+// 真正错的是"拿非响应式数据当 computed 的依赖"。
 const loggedIn = computed(() => isLoggedIn() && route.name !== 'login')
 const user = computed(() => getUser())
 
