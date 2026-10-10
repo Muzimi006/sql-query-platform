@@ -2,8 +2,17 @@
 #
 # ⚠️ 先说清这份文件**能做什么、不能做什么**：
 #   ✅ 它把「哪些指标该告警、阈值多少、为什么是这个阈值」写成了**可执行的文件**；
-#   ❌ 它**没有被部署过** —— 本机没有 Prometheus/Alertmanager 栈，
-#      所以每条规则**都没有在真实告警链路上验证过**（只能保证语法与指标名正确）。
+#   ✅ 第八轮已在 Docker 里加载进**真实 Prometheus** 验证过：
+#      `promtool check rules` → SUCCESS: 15 rules found；
+#      其中 **2 条真的 firing 过**（RedisDegraded、RedisSubscriberDown），含 pending→firing→恢复的时间线；
+#   ⚠️ 但 15 条里**只有这 2 条**验证过会响，其余 13 条只做到「语法通过 + 指标名核对」；
+#   ❌ **没有接 Alertmanager** —— 告警路由与通知链路**完全没有验证**。
+#
+# ⚠️ 另一个必须知道的机制：**Micrometer 的 Counter 是首次自增才注册**，
+#    所以没被触发过的规则所引用的计数器，在 /actuator/prometheus 里**根本不存在**
+#    （本轮实测：89 个指标族里只有 redis_subscriber_up 在）。
+#    对 increase(...) > 0 类规则这不影响正确性（空结果 = inactive），
+#    但副作用是 —— **「没有数据」与「真的是 0」在告警状态上分不出来**。
 #
 # 指标名用的是 **Prometheus 抓取端渲染后的形式**（点变下划线、Counter 补 _total）。
 #

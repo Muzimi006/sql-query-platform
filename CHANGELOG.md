@@ -30,9 +30,14 @@
   是否在运行，**不是 Redis 是否可达** —— `docker stop` 掉 Redis 后 Lettuce 会无限重连、
   容器始终 running，这个指标全程是 1。**Redis 挂了要看 `RedisDegraded`。**
   `deploy/prometheus/alerts.yml` 里两条规则的 description 已按实测改写。
-- **告警规则首次真机验证**（第八轮）：`RedisDegraded` 从 pending 到 firing **125 秒**
-  （= `for: 2m` + 一个 5 秒求值步长），恢复 Redis 后 **30.4 秒** 指标归零、**36.5 秒** 后告警 inactive。
-  另外 14 条规则仍未做故障注入验证；未接 Alertmanager，通知链路未验证。
+- **告警规则首次真机验证**（第八轮，**2 条**）：`promtool check rules` → `SUCCESS: 15 rules found`；
+  停 Redis 触发 `RedisDegraded`；用「应用带 Redis 故障启动」触发 `RedisSubscriberDown` ——
+  pending → firing **125 秒**（= `for: 2m` + 一个 5 秒求值步长），恢复后 **30.4 秒** 指标归零、**36.5 秒** inactive。
+  另外 13 条仍未做故障注入验证；未接 Alertmanager，通知链路未验证。
+- ⚠️ 监控的一个固有限制被实测出来：**Micrometer Counter 首次自增才注册** —— 没触发过的计数器
+  在 `/actuator/prometheus` 里根本不存在（本轮实测 89 个指标族里只有 `redis_subscriber_up` 在）。
+  对 `increase(...) > 0` 类规则不影响正确性（空结果 = inactive），但**「没有数据」与「真的是 0」
+  在告警状态上分不出来**。
 - 容器里跑 Prometheus 抓本机应用时，**必须设 `MANAGEMENT_ADDRESS=0.0.0.0`**
   （默认 127.0.0.1 只监听容器自己的回环，抓不到）—— 这是上一轮把它做成可配的直接价值。
 - **审计日志改为按结果记录**（`@Before` → `@Around`），并在 `detail` 里带上 `[SUCCESS]` / `[FAILED:异常类名]`。

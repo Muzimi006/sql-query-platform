@@ -543,12 +543,20 @@ CSV 导出编码、导出文件清理、数据源入口与状态校验、并发�
 4 组、**15 条**可执行的告警规则（死信队列、投递确认、熔断、Redis 降级、审计与回滚依据、容量水位）。
 每条规则都写了「**阈值为什么是这个数**」，并区分 **【实测】** 与 **【推断】**。
 
-> ✅ **已经真的响过一次了（第八轮）**：起了 Prometheus 加载这份规则，
-> 用 Redis 故障触发 `RedisDegraded` —— **pending 到 firing 125 秒**（= `for: 2m` + 一个 5 秒求值步长），
-> 恢复后 **30.4 秒** 指标归零、**36.5 秒** 告警转 inactive。
+> ✅ **真的响过了（第八轮，2 条）**：起了 Prometheus 加载这份规则（`promtool check rules` → `SUCCESS: 15 rules found`），
+> 停掉 Redis 触发 `RedisDegraded`（3 条序列 cache-read / cache-lock / cache-write）；
+> 又用「应用在 Redis 不可用时启动」触发 `RedisSubscriberDown` —— **pending 到 firing 125 秒**
+> （= `for: 2m` + 一个 5 秒求值步长），恢复 Redis 后 **30.4 秒** 指标归零（吻合 `retry-ms=30000`）、
+> **36.5 秒** 告警转 inactive。
 >
-> ⚠️ **但只有这 1 条被验证过**：另外 14 条只做到「SnakeYAML 解析通过 + 指标名对着
-> `/actuator/prometheus` 核对过」；**没有接 Alertmanager，通知链路未验证**。
+> ⚠️ **15 条里只有这 2 条被验证过**：另外 13 条只做到「promtool 语法检查 + 指标名对着
+> `/actuator/prometheus` 核对过」——**「加载成功且 health=ok」不等于「验证过会响」**；
+> **没有接 Alertmanager，通知链路未验证**。
+>
+> ⚠️ 还有一个副作用要知道：**Micrometer 的 Counter 是首次自增才注册**，所以没被触发过的规则
+> 引用的计数器在 `/actuator/prometheus` 里**根本不存在**（本轮实测：89 个指标族里只有
+> `redis_subscriber_up` 在）。对 `increase(...) > 0` 类规则这不影响正确性（空结果 = inactive），
+> 但副作用是**「没有数据」与「真的是 0」在告警状态上分不出来**。
 >
 > ⚠️ 还有一个实测发现：**`redis_subscriber_up` 跟踪的是 Spring 订阅容器、不是 Redis 可达性** ——
 > `docker stop` 掉 Redis 之后它全程还是 1，别拿它当「Redis 挂了」的信号（那要看 `RedisDegraded`）。
