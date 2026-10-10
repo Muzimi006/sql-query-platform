@@ -7,11 +7,15 @@ spring:
     timeout-per-shutdown-phase: 30s
   # ⚠️ 所有 @Scheduled 默认**共用 1 个线程**：任何一个卡住（等数据库、等 Broker）
   #    都会把补偿任务一起推迟 —— 而那两个补偿任务正是用来兜住"任务卡死"的。
-  #    这里显式给 4 个线程，让它们互不拖累。
+  #
+  # 4 → 6（第三轮）：定时任务从 5 处增加到 8 处，其中死信深度刷新（每 15 秒）
+  #    和巡检**都会同步读一次 Broker**，Broker 不可达时要等 AMQP 应答超时。
+  #    它们跑在调度线程上是**故意**的（比起让 Prometheus 抓取线程去等，宁可让调度线程等），
+  #    但线程数必须跟着涨，否则新的定时任务会把两个补偿任务一起拖住。
   task:
     scheduling:
       pool:
-        size: 4
+        size: 6
   datasource:
     # ⚠️ connectTimeout / socketTimeout 都不能省：
     #    MySQL 驱动的默认值是 **0 = 永不超时**，而 Hikari 的 connection-timeout 只管"借连接"，
