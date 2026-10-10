@@ -123,10 +123,20 @@ public class SqlReviewController {
      *
      * <p>{@code @RequestBody(required = false)}：批准可以不写意见，
      * 但请求体里有可能带别的字段（前端统一传对象更方便），所以允许空体。
+     *
+     * <p>⚠️ {@code @Valid} 不能省。DTO 上写了 {@code @Size(max = 500)}，
+     * 但<b>没有 @Valid 的请求体参数不会被校验</b> —— 约束注解就成了一句注释。
+     * 这个疏漏是靠一次真实 HTTP 调用发现的：传 600 字意见时，
+     * 拿到的不是"意见过长"，而是服务层那句"工单已被处理过"，
+     * 说明 {@code @Size} 根本没被执行过。
+     * 而 DB 列是 {@code VARCHAR(500)}，一旦真把它写进去，
+     * MySQL 严格模式抛的 {@code DataIntegrityViolationException}
+     * 既不是 BusinessException 也不是 DuplicateKeyException，
+     * 会掉进全局兜底变成"系统异常"。
      */
     @PostMapping("/{id}/approve")
     public Result<Void> approve(@PathVariable Long id,
-                                @RequestBody(required = false) SqlReviewDecisionDTO dto) {
+                                @Valid @RequestBody(required = false) SqlReviewDecisionDTO dto) {
         sqlReviewService.approve(UserContext.get(), id, dto == null ? null : dto.getComment());
         return Result.success();
     }
@@ -136,7 +146,7 @@ public class SqlReviewController {
      */
     @PostMapping("/{id}/reject")
     public Result<Void> reject(@PathVariable Long id,
-                               @RequestBody(required = false) SqlReviewDecisionDTO dto) {
+                               @Valid @RequestBody(required = false) SqlReviewDecisionDTO dto) {
         sqlReviewService.reject(UserContext.get(), id, dto == null ? null : dto.getComment());
         return Result.success();
     }
