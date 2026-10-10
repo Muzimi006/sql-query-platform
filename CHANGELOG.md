@@ -13,7 +13,7 @@
 ### 新增
 - **许可证**：Apache License 2.0（`LICENSE` + `NOTICE` + POM 里的 `<licenses>`）。
   理由与备选（MIT / GPL / AGPL）的差别记在问题修复档案 K-04。
-- **监控告警规则** `deploy/prometheus/alerts.yml`：4 组 17 条规则，把已有计数器变成可执行的告警，
+- **监控告警规则** `deploy/prometheus/alerts.yml`：4 组 15 条规则，把已有计数器变成可执行的告警，
   每条都标注阈值依据属于 **【实测】** 还是 **【推断】**。⚠️ **未在真实告警链路上验证过**（本机没有该栈）。
 - 熔断器行为集成用例 `DbSourceCircuitBreakerIntegrationTest`（2 条，真实驱动 + 真实连接池，量出毫秒级对比）。
 - 平台日志表的保留策略（`retention.*`，**默认关闭**）：`export_task` / `audit_log` / `query_history`

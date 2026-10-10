@@ -539,11 +539,11 @@ CSV 导出编码、导出文件清理、数据源入口与状态校验、并发�
 ### 监控告警
 
 **[`deploy/prometheus/alerts.yml`](deploy/prometheus/alerts.yml)** 把项目里的十几个计数器变成了
-4 组、17 条可执行的告警规则（死信队列、投递确认、熔断、Redis 降级、审计与回滚依据、容量水位）。
+4 组、**15 条**可执行的告警规则（死信队列、投递确认、熔断、Redis 降级、审计与回滚依据、容量水位）。
 每条规则都写了「**阈值为什么是这个数**」，并区分 **【实测】** 与 **【推断】**。
 
 > ⚠️ 这些规则**没有被部署验证过**（本机没有 Prometheus/Alertmanager 栈）：
-> 已经做的是逐个对着运行中应用的 `/actuator/prometheus` 输出核对指标名与语法；
+> 已经做的是：逐个对着运行中应用的 `/actuator/prometheus` 输出核对指标名，并用 SnakeYAML（Spring Boot 自带的那个库）真实解析过这份文件（4 组 / 15 条，每条都有 alert 与 expr）；
 > **没有做的是「真的响一次」**。配了和会生效是两件事。
 
 对外可见的变化记在 **[`CHANGELOG.md`](CHANGELOG.md)**（Keep a Changelog + SemVer）；
