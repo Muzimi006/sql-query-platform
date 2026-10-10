@@ -19,6 +19,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -57,6 +58,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 而是 <b>{@code SET v = v + 1}</b> —— 它<b>不幂等</b>，
  * 一旦被执行两次，值就会变成 2。这条用例的价值全在这个设计上。
  */
+@Slf4j
 @Tag("integration")
 @SpringBootTest
 class SqlReviewWorkflowIntegrationTest {
@@ -87,19 +89,55 @@ class SqlReviewWorkflowIntegrationTest {
 
     private final List<Long> createdSourceIds = new ArrayList<>();
 
+    /**
+     * 收尾清理。<b>每一步都必须独立</b> —— 这是踩过坑之后改的。
+     *
+     * <h3>⚠️ 原来的写法为什么是错的</h3>
+     *
+     * <p>原来这四步是平铺的：先删工单、再删数据源、再删探针表。
+     * 看起来没问题 —— 直到某一次 <b>{@code sql_review_request} 表还没建</b>
+     * （迁移脚本没跑，见 {@code sql/migrate_003_sql_review.sql}）。
+     *
+     * <p>那时第一步就抛 {@code BadSqlGrammarException}，
+     * <b>后面删数据源的循环一次都没执行</b> —— 于是每跑一次测试，
+     * 就往 {@code data_source} 里留一行 {@code IT_REVIEW_SRC_xxx}。
+     * 实测在库里留下了 4 行（id 202~205），而且它们**没有外键约束**，
+     * 不会随任何东西级联删除，会一直待在那儿。
+     *
+     * <p>更麻烦的是它<b>很难被发现</b>：清理失败发生在 {@code @AfterEach} 里，
+     * 而那时候测试本身往往已经是红的了 —— <b>一堆红色里多一条少一条，没人会去看</b>。
+     *
+     * <p>所以现在每一步各自 try/catch：<b>清理是一组互相独立的最佳努力，不是一条流水线。</b>
+     * 一步失败不应该让后面的清理也停掉。
+     */
     @AfterEach
-    void cleanUp() throws Exception {
-        reviewMapper.delete(new LambdaQueryWrapper<SqlReviewRequest>()
-                .eq(SqlReviewRequest::getUserId, TEST_USER_ID));
+    void cleanUp() {
+        // ① 删工单（注意：删不掉也要继续往下清）
+        try {
+            reviewMapper.delete(new LambdaQueryWrapper<SqlReviewRequest>()
+                    .eq(SqlReviewRequest::getUserId, TEST_USER_ID));
+        } catch (Exception e) {
+            log.warn("清理工单失败，已跳过（后续清理继续）。cause={}", e.toString());
+        }
+
+        // ② 删本用例建的数据源 —— 这一步最不能漏：漏掉就是永久留一行
         for (Long id : createdSourceIds) {
-            dbSourceService.removeById(id);
+            try {
+                dbSourceService.removeById(id);
+            } catch (Exception e) {
+                log.warn("清理数据源失败，需要人工删除。id={}, cause={}", id, e.toString());
+            }
         }
         createdSourceIds.clear();
 
+        // ③ 删探针表
         try (Connection connection = dataSource.getConnection();
              Statement statement = connection.createStatement()) {
             statement.execute("DROP TABLE IF EXISTS " + PROBE_TABLE);
+        } catch (Exception e) {
+            log.warn("清理探针表失败，已跳过。cause={}", e.toString());
         }
+
         UserContext.clear();
     }
 
