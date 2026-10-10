@@ -543,9 +543,15 @@ CSV 导出编码、导出文件清理、数据源入口与状态校验、并发�
 4 组、**15 条**可执行的告警规则（死信队列、投递确认、熔断、Redis 降级、审计与回滚依据、容量水位）。
 每条规则都写了「**阈值为什么是这个数**」，并区分 **【实测】** 与 **【推断】**。
 
-> ⚠️ 这些规则**没有被部署验证过**（本机没有 Prometheus/Alertmanager 栈）：
-> 已经做的是：逐个对着运行中应用的 `/actuator/prometheus` 输出核对指标名，并用 SnakeYAML（Spring Boot 自带的那个库）真实解析过这份文件（4 组 / 15 条，每条都有 alert 与 expr）；
-> **没有做的是「真的响一次」**。配了和会生效是两件事。
+> ✅ **已经真的响过一次了（第八轮）**：起了 Prometheus 加载这份规则，
+> 用 Redis 故障触发 `RedisDegraded` —— **pending 到 firing 125 秒**（= `for: 2m` + 一个 5 秒求值步长），
+> 恢复后 **30.4 秒** 指标归零、**36.5 秒** 告警转 inactive。
+>
+> ⚠️ **但只有这 1 条被验证过**：另外 14 条只做到「SnakeYAML 解析通过 + 指标名对着
+> `/actuator/prometheus` 核对过」；**没有接 Alertmanager，通知链路未验证**。
+>
+> ⚠️ 还有一个实测发现：**`redis_subscriber_up` 跟踪的是 Spring 订阅容器、不是 Redis 可达性** ——
+> `docker stop` 掉 Redis 之后它全程还是 1，别拿它当「Redis 挂了」的信号（那要看 `RedisDegraded`）。
 
 对外可见的变化记在 **[`CHANGELOG.md`](CHANGELOG.md)**（Keep a Changelog + SemVer）；
 每个问题「怎么被发现、为什么这么修、留下了什么边界」记在问题修复档案里。

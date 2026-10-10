@@ -107,8 +107,16 @@ groups:
           summary: "Redis 失效广播订阅不在线"
           description: |
             后果是多实例部署时「一台机器改了数据源，另一台机器的连接池还是旧的」。
-            【实测】看门狗只在**容器不再运行**时才发现（默认 30 秒一轮），
-            所以这条规则要等 2 分钟 —— 它本来就是「漏报型」的保护。
+
+            ⚠️⚠️ **这条指标的含义必须看清楚：它跟踪的是 Spring 那个订阅容器是否在运行，
+            不是 Redis 是否可达。** 实测（第八轮）：`docker stop` 掉 Redis 之后，
+            Lettuce 的连接看门狗会无限重连，**订阅容器始终 running → 这个指标全程是 1**，
+            等 4 分钟也不会 firing。也就是说：
+            · **Redis 挂了**要看 `RedisDegraded`（下面那条），不是这条；
+            · 这条只在「订阅容器真的停了」时才会响（例如启动时 Redis 就不可达、重试全失败）。
+            （原先那句「看门狗只在容器不再运行时才发现」容易被读成 Docker 容器，已改。）
+
+            【实测】看门狗是 30 秒一轮的**周期发现**，所以这条规则要等 2 分钟 —— 它本来就是「漏报型」的保护。
 
       - alert: RedisDegraded
         expr: increase(redis_degradation_total[5m]) > 0
@@ -119,6 +127,11 @@ groups:
           description: |
             【实测】Redis 停掉后，除注册登录外所有接口都靠降级路径工作（限流失效、缓存回源）。
             这是**设计内的降级**，但持续大于 0 说明 Redis 真的挂了。
+
+            ⭐ **这条规则是第八轮真机验证过的**（唯一一条）：
+            触发 → pending 到 firing **125 秒**（= `for: 2m` + 一个 5 秒求值步长）；
+            恢复 Redis 后 **30.4 秒** 指标回到 0（吻合 `redis.subscriber-retry-ms=30000`），
+            再过 **36.5 秒** 告警转 inactive。
 
   - name: sql-query-platform-data-safety
     rules:

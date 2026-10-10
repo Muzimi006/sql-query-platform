@@ -26,6 +26,15 @@
 - Maven Enforcer：构建时校验 JDK ≥ 17、Maven ≥ 3.9、**依赖版本收敛**。
 
 ### 变更
+- **`redis_subscriber_up` 的语义写清楚了**（实测发现原注释有误导）：它跟踪的是 **Spring 订阅容器**
+  是否在运行，**不是 Redis 是否可达** —— `docker stop` 掉 Redis 后 Lettuce 会无限重连、
+  容器始终 running，这个指标全程是 1。**Redis 挂了要看 `RedisDegraded`。**
+  `deploy/prometheus/alerts.yml` 里两条规则的 description 已按实测改写。
+- **告警规则首次真机验证**（第八轮）：`RedisDegraded` 从 pending 到 firing **125 秒**
+  （= `for: 2m` + 一个 5 秒求值步长），恢复 Redis 后 **30.4 秒** 指标归零、**36.5 秒** 后告警 inactive。
+  另外 14 条规则仍未做故障注入验证；未接 Alertmanager，通知链路未验证。
+- 容器里跑 Prometheus 抓本机应用时，**必须设 `MANAGEMENT_ADDRESS=0.0.0.0`**
+  （默认 127.0.0.1 只监听容器自己的回环，抓不到）—— 这是上一轮把它做成可配的直接价值。
 - **审计日志改为按结果记录**（`@Before` → `@Around`），并在 `detail` 里带上 `[SUCCESS]` / `[FAILED:异常类名]`。
   被并发闸门 / 熔断拒绝的请求（`RejectedBeforeWorkException`）**不再产生审计写**，
   改记 `audit.skipped{reason=rejected-before-work}`（这修掉了压测里那条负向扩展）。
