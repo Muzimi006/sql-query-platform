@@ -11,12 +11,14 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import org.springframework.validation.annotation.Validated;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
 @RestController
 @RequestMapping("/api/history")
+@Tag(name = "查询历史", description = "每次查询的成败、耗时、错误信息都会留痕")
 // 同 DbSourceController：方法级参数校验必须先加 @Validated
 @Validated
 public class HistoryController {

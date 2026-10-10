@@ -14,12 +14,14 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import jakarta.validation.Valid;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
 @RestController
 @RequestMapping("/api/export")
+@Tag(name = "导出", description = "创建任务立即返回，实际由 RabbitMQ 消费者异步执行")
 public class ExportController {
 
     private final ExportService exportService;

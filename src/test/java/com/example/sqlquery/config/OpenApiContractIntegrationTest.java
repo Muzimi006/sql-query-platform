@@ -52,6 +52,25 @@ class OpenApiContractIntegrationTest {
      */
     private static final int EXPECTED_OPERATIONS = 30;
 
+    /**
+     * 🔒 仅 ADMIN 的三个接口。
+     *
+     * <p>⚠️ <b>权限规则写在服务层，不写在注解上</b>（那是刻意的：
+     * 放在注解上，以后多一个调用方就多一条绕过检查的路径）。
+     * 代价是<b>自动生成的文档看不出来</b> —— 所以必须由人补上说明，
+     * 而"人补的东西会漏"正是本测试要挡的事。
+     */
+    private static final List<String> ADMIN_ONLY_OPERATIONS = List.of(
+            "GET /api/sql-review/pending",
+            "POST /api/sql-review/{id}/approve",
+            "POST /api/sql-review/{id}/reject");
+
+    /** 全项目仅有的三个不需要 token 的接口。 */
+    private static final List<String> PUBLIC_OPERATIONS = List.of(
+            "POST /api/auth/register",
+            "POST /api/auth/login",
+            "POST /api/auth/logout");
+
     /** 每个业务域至少有一个接口出现在文档里（防止某个 Controller 整个没被扫到）。 */
     private static final List<String> REQUIRED_PATH_PREFIXES = List.of(
             "/api/auth/", "/api/datasource", "/api/query/", "/api/history",
@@ -119,6 +138,62 @@ class OpenApiContractIntegrationTest {
                 "接口数量与 11-接口清单与契约.md 记录的不一致。"
                         + "新增/删除接口时，请同时更新那个文档和本测试的 EXPECTED_OPERATIONS。"
                         + "当前实际：" + operations);
+    }
+
+    /** 找出所有"说明里带了 ADMIN 标记"的接口。 */
+    private List<String> findMarkedAdminOnly(JsonNode root) {
+        List<String> marked = new ArrayList<>();
+        root.path("paths").fields().forEachRemaining(pathEntry -> pathEntry.getValue().fields()
+                .forEachRemaining(methodEntry -> {
+                    if (!List.of("get", "post", "put", "delete", "patch").contains(methodEntry.getKey())) {
+                        return;
+                    }
+                    String description = methodEntry.getValue().path("description").asText("");
+                    if (description.contains("仅 ADMIN")) {
+                        marked.add(methodEntry.getKey().toUpperCase() + " " + pathEntry.getKey());
+                    }
+                }));
+        return marked;
+    }
+
+    @Test
+    @DisplayName("🔒 仅 ADMIN 的接口必须在文档里标注 —— 权限规则不写进注解，自动生成是看不出来的")
+    void adminOnlyEndpointsMustBeMarked() throws Exception {
+        List<String> marked = findMarkedAdminOnly(fetchApiDocs());
+
+        // 两个方向都断言：
+        // ① 该标的都标了（漏标注 → 调用方以为谁都能调）
+        // ② 没有多标（多标注 → 文档说谎，把人挡在门外）
+        assertEquals(ADMIN_ONLY_OPERATIONS.stream().sorted().toList(),
+                marked.stream().sorted().toList(),
+                "文档里标了「仅 ADMIN」的接口和实际的 ADMIN 接口对不上。"
+                        + "新增管理员接口时，请同步 @Operation(description=...) 和本测试的 EXPECTED 列表。");
+    }
+
+    @Test
+    @DisplayName("三个公开接口必须显式声明 security: [] —— 否则文档上看起来它们也要 token")
+    void publicEndpointsMustDeclareNoSecurity() throws Exception {
+        JsonNode root = fetchApiDocs();
+        List<String> declared = new ArrayList<>();
+
+        root.path("paths").fields().forEachRemaining(pathEntry -> pathEntry.getValue().fields()
+                .forEachRemaining(methodEntry -> {
+                    if (!List.of("get", "post", "put", "delete", "patch").contains(methodEntry.getKey())) {
+                        return;
+                    }
+                    JsonNode security = methodEntry.getValue().path("security");
+                    // 显式声明成空数组 = "这个接口不需要认证"
+                    if (security.isArray() && security.isEmpty()) {
+                        declared.add(methodEntry.getKey().toUpperCase() + " " + pathEntry.getKey());
+                    }
+                }));
+
+        assertEquals(PUBLIC_OPERATIONS.stream().sorted().toList(),
+                declared.stream().sorted().toList(),
+                "显式声明「不需要认证」的接口与预期不符。"
+                        + "⚠️ 注意：全局默认是所有接口都要 Bearer，"
+                        + "所以公开接口必须用 @Operation(security = {}) 单独覆盖 ——"
+                        + "否则文档上它们看起来也要 token，调用方会白折腾。");
     }
 
     @Test

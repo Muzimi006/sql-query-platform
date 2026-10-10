@@ -8,12 +8,14 @@ import com.example.sqlquery.service.FavoriteSqlService;
 import com.example.sqlquery.vo.FavoriteSqlVO;
 
 import jakarta.validation.Valid;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
 @RestController
 @RequestMapping("/api/favorite")
+@Tag(name = "收藏", description = "收藏常用 SQL")
 public class FavoriteSqlController {
 
     private final FavoriteSqlService favoriteSqlService;

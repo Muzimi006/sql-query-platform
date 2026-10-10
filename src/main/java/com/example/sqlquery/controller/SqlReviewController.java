@@ -10,6 +10,8 @@ import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.service.SqlReviewService;
 import com.example.sqlquery.util.RateLimitUtil;
 import com.example.sqlquery.vo.SqlReviewRequestVO;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -46,6 +48,7 @@ import org.springframework.web.bind.annotation.RestController;
 // 这里刻意和 DbSourceController / HistoryController 保持一致 ——
 // 两个分页接口拒绝非法参数、第三个静默钳制，是最容易让人踩坑的那种"不一致"
 @Validated
+@Tag(name = "审核工单", description = "写语句不再立即执行，而是先落一张待审工单")
 public class SqlReviewController {
 
     private final SqlReviewService sqlReviewService;
@@ -77,6 +80,10 @@ public class SqlReviewController {
      * <p>注意 DTO 里没有 generatedBy —— 走这个入口的一律记为人工手写。
      * AI 生成的那条走 {@code NaturalLanguageSqlService}，由服务端标记来源。
      */
+    @Operation(summary = "提交工单",
+            description = "任何登录用户都可以提交（申请本身不改任何数据）。"
+                    + "⚠️ 受理范围由 platform.sql-permission.reviewable-types 决定，默认 INSERT/UPDATE/DELETE；"
+                    + "提交 SELECT 会被告知「这是查询，不用审批」，提交 DDL 会被告知走 DBA 流程。")
     @PostMapping("/submit")
     public Result<SqlReviewRequestVO> submit(@Valid @RequestBody SqlReviewSubmitDTO dto) {
         Long userId = UserContext.get();
@@ -89,6 +96,7 @@ public class SqlReviewController {
     }
 
     /** 我提交的工单。 */
+    @Operation(summary = "我提交的工单", description = "任何登录用户，只返回自己的工单")
     @GetMapping("/mine")
     public Result<IPage<SqlReviewRequestVO>> mine(
             @RequestParam(defaultValue = "1")
@@ -101,6 +109,8 @@ public class SqlReviewController {
     }
 
     /** 待审批队列（管理员）。 */
+    @Operation(summary = "待审批队列", description = "🔒 **仅 ADMIN** 可用。"
+            + "这里返回的是别人提交的待执行 SQL，属于敏感内容，所以按角色收口。")
     @GetMapping("/pending")
     public Result<IPage<SqlReviewRequestVO>> pending(
             @RequestParam(defaultValue = "1")
@@ -113,6 +123,9 @@ public class SqlReviewController {
     }
 
     /** 工单详情：申请人看自己的，管理员看全部。 */
+    @Operation(summary = "工单详情", description = "申请人本人或 ADMIN。"
+            + "⚠️ 看别人的工单返回的是「工单不存在」而不是「无权查看」——"
+            + "后者等于确认了这个 id 上确实有工单，拿一串 id 去试就能数出全部工单量。")
     @GetMapping("/{id}")
     public Result<SqlReviewRequestVO> detail(@PathVariable Long id) {
         return Result.success(sqlReviewService.detail(UserContext.get(), id));
@@ -134,6 +147,10 @@ public class SqlReviewController {
      * 既不是 BusinessException 也不是 DuplicateKeyException，
      * 会掉进全局兜底变成"系统异常"。
      */
+    @Operation(summary = "批准", description = "🔒 **仅 ADMIN** 可用，且**不能审批自己提交的工单**"
+            + "（四眼原则；配置 review.allow-self-approve 可放开）。"
+            + "⚠️ 批准是**异步**的：返回 200 只代表工单进入 APPROVED，"
+            + "要轮询详情看 status 变成 EXECUTED / FAILED。")
     @PostMapping("/{id}/approve")
     public Result<Void> approve(@PathVariable Long id,
                                 @Valid @RequestBody(required = false) SqlReviewDecisionDTO dto) {
@@ -144,6 +161,9 @@ public class SqlReviewController {
     /**
      * 驳回。意见必填 —— 校验在服务层，这样绕过 HTTP 直接调服务时同样拦得住。
      */
+    @Operation(summary = "驳回", description = "🔒 **仅 ADMIN** 可用。"
+            + "⚠️ **意见必填** —— 申请人要靠它知道该改什么，否则只能原样再提交一遍。"
+            + "自己驳回自己的工单是允许的（那本质上就是「撤回」，没有风险）。")
     @PostMapping("/{id}/reject")
     public Result<Void> reject(@PathVariable Long id,
                                @Valid @RequestBody(required = false) SqlReviewDecisionDTO dto) {

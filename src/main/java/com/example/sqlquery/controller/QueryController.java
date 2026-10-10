@@ -12,10 +12,12 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/query")
+@Tag(name = "查询", description = "执行 SQL。四道防线 + 限流 + 超时 + 行数上限都在这条链路上")
 public class QueryController {
 
     private final QueryService queryService;

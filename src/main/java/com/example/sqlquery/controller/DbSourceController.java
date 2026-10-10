@@ -14,12 +14,14 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import org.springframework.validation.annotation.Validated;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
 @RestController
 @RequestMapping("/api/datasource")
+@Tag(name = "数据源", description = "连接信息管理。密码 AES-GCM 加密后入库，**出参永不下发密码**")
 // @Validated 是方法级参数校验的开关：只有加上它，@RequestParam 上的 @Min / @Max 才会生效
 @Validated
 public class DbSourceController {

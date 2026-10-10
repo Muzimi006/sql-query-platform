@@ -14,6 +14,9 @@ import com.example.sqlquery.util.JwtUtil;
 import com.example.sqlquery.util.RateLimitUtil;
 import com.example.sqlquery.vo.UserVO;
 import jakarta.servlet.http.HttpServletRequest;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.security.SecurityRequirements;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -22,6 +25,20 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/auth")
+@Tag(name = "认证", description = "注册 / 登录 / 登出 —— 全项目仅有的三个不需要 token 的接口")
+/*
+ * ⚠️ 这三个方法上的 @SecurityRequirements（空）不能删，也不能换成 @Operation(security = {})。
+ *
+ * OpenApiConfig 里声明了**全局**的 Bearer 要求，所以默认所有接口在文档里都"要 token"。
+ * 公开接口必须逐个覆盖成空 —— 但 **@Operation(security = {}) 在 springdoc 3.1.1 下是无效的**：
+ * 空数组被当成"没设置"，生成的 operation 上根本没有 security 字段，于是全局要求照旧生效，
+ * 文档上看起来注册/登录也要 token，调用方会白折腾。
+ * 必须用独立的 @SecurityRequirements 注解。
+ *
+ * 这一条是靠 OpenApiContractIntegrationTest 抓出来的 ——
+ * 我先按直觉写了 security = {}，测试断言"恰好这三个接口声明了 security: []"，
+ * 直接变红并报出实际是空集合。
+ */
 public class AuthController {
 
     /**
@@ -64,6 +81,10 @@ public class AuthController {
         this.rateLimitUtil = rateLimitUtil;
     }
 
+    @Operation(summary = "注册",
+            description = "**不需要 token**。带 adminCode 才拿到 ADMIN 角色"
+                    + "（platform.admin-register-code，留空即关闭自助创建管理员）。按 IP 限流 5 次 / 60 秒。")
+    @SecurityRequirements
     @PostMapping("/register")
     public Result<UserVO> register(@Valid @RequestBody RegisterDTO dto, HttpServletRequest request) {
         // 注册接口原来完全没有限流，一个脚本就能批量刷出垃圾账号
@@ -89,6 +110,12 @@ public class AuthController {
      * BCrypt 比对（这是有意设计成很慢的操作），攻击者用很小的成本就能把 CPU 打满。
      * 限流的意义之一就是不让请求走到那一步。
      */
+    @Operation(summary = "登录",
+            description = "**不需要 token**。返回 LoginVO{token, user}。"
+                    + "⚠️ 角色在 **user.role** 里，不是顶层字段。"
+                    + "限流是 **IP + 账号双维度**（20 次 / 10 次，60 秒窗口）："
+                    + "只按 IP 挡不住代理池，只按账号挡不住撞库。")
+    @SecurityRequirements
     @PostMapping("/login")
     public Result<LoginVO> login(@Valid @RequestBody LoginDTO dto, HttpServletRequest request) {
         String ip = ClientIpUtil.getClientIp(request);
@@ -122,6 +149,12 @@ public class AuthController {
      * 每请求一次就在 Redis 里写下一条存活到 TTL 结束的键 ——
      * 一个不需要登录、可以被无限放大的写入入口。
      */
+    @Operation(summary = "登出",
+            description = "**不需要 token**（刻意的：token 已过期的用户也该点得动退出）。"
+                    + "代价是这里拿到的 token 完全没验签，所以**方法内部自己验一次**，验不过就正常返回。"
+                    + "不这么做的话，任何人 POST 一个乱编的字符串就能往 Redis 里灌黑名单键 ——"
+                    + "一个不需要登录、可被无限放大的写入入口。")
+    @SecurityRequirements
     @PostMapping("/logout")
     public Result<Void> logout(HttpServletRequest request) {
         String authHeader = request.getHeader("Authorization");
