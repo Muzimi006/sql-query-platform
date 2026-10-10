@@ -94,4 +94,53 @@ class SqlPermissionServiceTest {
         Set<SqlType> allowed = service.getAllowedTypes(UserRole.ADMIN);
         assertThrows(UnsupportedOperationException.class, () -> allowed.add(SqlType.DDL));
     }
+
+    // ------------------------------------------------------------------
+    // 可申请类型（工单链路）—— 它和角色白名单是两套东西
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("可申请类型必须独立于角色白名单：否则 USER 连申请写操作都做不到")
+    void reviewableTypesMustBeIndependentOfRoleWhitelist() {
+        Set<SqlType> reviewable = service.getReviewableTypes();
+
+        // 前提：USER 本来就没有写权限 —— 没有这个前提，工单系统就没有存在意义
+        assertFalse(service.getAllowedTypes(UserRole.USER).contains(SqlType.UPDATE),
+                "USER 不该有直接执行 UPDATE 的权限");
+
+        // 而工单必须受理它。这两条放在一起才是完整的设计意图：
+        // 「不能直接改」和「不能申请改」是两回事，工单存在的理由正是后者为真
+        assertTrue(reviewable.contains(SqlType.UPDATE),
+                "工单必须受理 USER 的写操作申请，否则工单系统只是个摆设");
+        assertTrue(reviewable.contains(SqlType.INSERT));
+        assertTrue(reviewable.contains(SqlType.DELETE));
+    }
+
+    @Test
+    @DisplayName("可申请类型默认不含 SELECT，也不含 DDL")
+    void reviewableTypesShouldExcludeSelectAndDdl() {
+        Set<SqlType> reviewable = service.getReviewableTypes();
+
+        assertFalse(reviewable.contains(SqlType.SELECT),
+                "查询不需要审批：用户本来就有直接执行的权限，让它排队等审批是纯粹的功能倒退");
+        assertFalse(reviewable.contains(SqlType.DDL),
+                "DDL 应走 DBA 流程，不该默认通过业务工单开放");
+    }
+
+    @Test
+    @DisplayName("可申请类型配成空集合时全拒（fail-closed），而不是放行")
+    void emptyReviewableTypesShouldFailClosed() {
+        properties.setReviewableTypes(Set.of());
+
+        // 表现为「谁都不能提交工单」这个显眼的功能失效，
+        // 而不是「谁都能提交任意语句」这个静默的越权
+        assertTrue(service.getReviewableTypes().isEmpty());
+    }
+
+    @Test
+    @DisplayName("可申请类型同样不可变")
+    void reviewableTypesShouldBeImmutable() {
+        assertThrows(UnsupportedOperationException.class,
+                () -> service.getReviewableTypes().add(SqlType.DDL));
+    }
 }

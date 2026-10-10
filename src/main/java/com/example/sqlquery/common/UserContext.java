@@ -24,6 +24,11 @@ public class UserContext {
         return ROLE_HOLDER.get();
     }
 
+    /** 当前请求是不是管理员。见 {@link UserRole#isAdmin(String)}。 */
+    public static boolean isAdmin() {
+        return UserRole.isAdmin(ROLE_HOLDER.get());
+    }
+
     public static void clear() {
         HOLDER.remove();
         ROLE_HOLDER.remove();

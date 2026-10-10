@@ -52,11 +52,56 @@ public class SqlPermissionProperties {
         return defaults;
     }
 
+    /**
+     * 「可以提交审核工单去申请执行」的语句类型。
+     *
+     * <h2>为什么它必须和 {@link #roleWhitelist} 分开</h2>
+     *
+     * <p>这是工单流程里最容易搞错、也最致命的一个点。
+     * 直觉上会想"提交工单也用同一个白名单不就行了"，但那样会得到一个死循环：
+     * {@link UserRole#USER} 的白名单里只有 {@code SELECT}，
+     * 于是 USER <b>连一条 UPDATE 的工单都提交不了</b> ——
+     * 而"让没有直接写权限的人能够申请写操作"，恰恰是整个工单系统存在的理由。
+     *
+     * <p>所以要把两件事分清楚：
+     * <ul>
+     *   <li><b>能不能申请</b> —— 由本配置决定，默认 INSERT / UPDATE / DELETE；</li>
+     *   <li><b>能不能直接执行</b> —— 由 {@link #roleWhitelist} 决定，走
+     *       {@code QueryServiceImpl}，与工单无关；</li>
+     *   <li><b>工单批了之后能不能执行</b> —— 由"审批人点了通过"这个动作授予，
+     *       它是一次性的、绑定到具体一条 SQL 上的，不会顺带把角色升级成可写。</li>
+     * </ul>
+     *
+     * <h2>为什么 DDL 默认不在里面</h2>
+     *
+     * <p>与 {@link #roleWhitelist} 里 DDL 默认谁都不给是同一个理由：
+     * {@code DROP TABLE} / {@code TRUNCATE} 这类语句没有"审核一下就能放行"的正当场景 ——
+     * 它们不是数据订正，是结构变更，应该走 DBA 流程而不是业务工单。
+     * 真需要时由部署方显式加，而不是默认开放。
+     *
+     * <p>⚠️ 放宽的仅仅是<b>语句类型</b>。解析、AST 危险函数检查、系统库检查、
+     * 字符串兜底这四道防线在提交和驳回之后的执行阶段<b>一道都不会少</b> ——
+     * 可申请的是"写语句"，不是"危险语句"。
+     */
+    private Set<SqlType> reviewableTypes = defaultReviewableTypes();
+
+    private static Set<SqlType> defaultReviewableTypes() {
+        return EnumSet.of(SqlType.INSERT, SqlType.UPDATE, SqlType.DELETE);
+    }
+
     public Map<String, Set<SqlType>> getRoleWhitelist() {
         return roleWhitelist;
     }
 
     public void setRoleWhitelist(Map<String, Set<SqlType>> roleWhitelist) {
         this.roleWhitelist = roleWhitelist;
+    }
+
+    public Set<SqlType> getReviewableTypes() {
+        return reviewableTypes;
+    }
+
+    public void setReviewableTypes(Set<SqlType> reviewableTypes) {
+        this.reviewableTypes = reviewableTypes;
     }
 }

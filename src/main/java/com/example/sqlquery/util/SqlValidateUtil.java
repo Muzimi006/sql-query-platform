@@ -2,6 +2,7 @@ package com.example.sqlquery.util;
 
 import com.example.sqlquery.dialect.SqlDialect;
 import com.example.sqlquery.exception.BusinessException;
+import com.example.sqlquery.exception.SqlTypeNotAllowedException;
 import net.sf.jsqlparser.JSQLParserException;
 import net.sf.jsqlparser.expression.Function;
 import net.sf.jsqlparser.parser.CCJSqlParserUtil;
@@ -121,6 +122,16 @@ public final class SqlValidateUtil {
     private static final String EXECUTABLE_COMMENT_MARKER = "/*!";
 
     /**
+     * 校验通过之后带出来的信息。
+     *
+     * @param sqlType 语句类型
+     * @param tables  这条 SQL 涉及的表名（AST 里解析出来的，是<b>字面表名</b>，
+     *                不一定真实存在 —— 它来自用户输入，不要拿它去拼 SQL）
+     */
+    public record ValidationResult(SqlType sqlType, List<String> tables) {
+    }
+
+    /**
      * 校验一条 SQL 能不能执行。
      *
      * <p><b>为什么必须传方言</b>：危险函数与系统库的名单是<b>方言相关</b>的 ——
@@ -130,9 +141,16 @@ public final class SqlValidateUtil {
      * <p>所以这里<b>不提供省略方言的重载</b>：多一个"忘了传"的口子，
      * 就等于多一条"看起来在检查、其实没检查"的路径。
      *
+     * <p><b>返回值说明</b>：它顺带把"这条 SQL 是什么类型、动了哪几张表"带出来 ——
+     * 这两样在遍历语法树时本来就已经拿到了。工单需要展示"会动哪几张表"，
+     * 如果为了这个再解析一次，就等于对同一段 SQL 解析两遍，
+     * 而且多了一处"可能和校验时看到的不一致"的地方。
+     * <b>一次解析，既做校验、又出结果</b>，是这里唯一合理的做法。
+     *
      * @param dialect 该 SQL 将要执行的那个数据源的方言
+     * @return 语句类型 + 涉及的表名
      */
-    public static void validate(String sql, Set<SqlType> allowedTypes, SqlDialect dialect) {
+    public static ValidationResult validate(String sql, Set<SqlType> allowedTypes, SqlDialect dialect) {
         if (sql == null || sql.isBlank()) {
             throw new BusinessException("SQL不能为空");
         }
@@ -146,7 +164,10 @@ public final class SqlValidateUtil {
         // 第 2 步：类型白名单（默认拒绝）
         SqlType sqlType = resolveSqlType(statement);
         if (allowedTypes == null || !allowedTypes.contains(sqlType)) {
-            throw new BusinessException("没有权限执行该类型SQL");
+            // 抛带类型的子类而不是裸的 BusinessException：消息一字不变，
+            // 但调用方（工单链路）能据此说出「这是查询，不用审批」这种正确的话。
+            // 详见 SqlTypeNotAllowedException 的注释。
+            throw new SqlTypeNotAllowedException(sqlType, allowedTypes);
         }
 
         // 第 3 步：AST 检查。
@@ -160,6 +181,8 @@ public final class SqlValidateUtil {
         // 第 4 步：解析器看不见的两个东西，只能回到字符串上判断
         checkExecutableComment(stripStringLiterals(sql, dialect));
         checkIntoOutFile(stripStringLiterals(statement.toString(), dialect));
+
+        return new ValidationResult(sqlType, tables);
     }
 
     /**

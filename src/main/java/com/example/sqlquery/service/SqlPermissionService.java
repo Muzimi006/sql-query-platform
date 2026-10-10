@@ -60,4 +60,32 @@ public class SqlPermissionService {
         // 返回不可变副本：调用方拿到之后改不动它，避免"某处不小心改了全局配置"
         return Set.copyOf(allowed);
     }
+
+    /**
+     * 取「可以提交审核工单申请执行」的语句类型。
+     *
+     * <p>与 {@link #getAllowedTypes(String)} 的区别见
+     * {@link SqlPermissionProperties#getReviewableTypes()}：这里是"能不能申请"，
+     * 那里是"能不能直接执行"。USER 直接执行 UPDATE 会被拒，但申请 UPDATE 的工单应该被受理。
+     *
+     * <p>这个方法<b>不看角色</b> —— 申请权对所有登录用户开放。
+     * 理由：申请本身不会对数据库产生任何影响，它只是往工单表里插一行 PENDING；
+     * 真正有风险的动作是审批和执行，那两处各自有独立的权限校验。
+     * 反过来，如果按角色限制申请权，就等于要求"用户必须是管理员才能申请管理员批准"，
+     * 工单流程就没有存在价值了。
+     *
+     * <p>fail-closed 同样适用：配置被写成空集合时返回空集合，
+     * 表现为"谁都不能提交工单"（一个显眼的功能失效），而不是"谁都能提交任意语句"。
+     *
+     * @return <b>不允许为空</b>的集合
+     */
+    public Set<SqlType> getReviewableTypes() {
+        Set<SqlType> configured = properties.getReviewableTypes();
+        if (configured == null || configured.isEmpty()) {
+            log.warn("配置 platform.sql-permission.reviewable-types 为空，"
+                    + "按「不接受任何工单申请」处理");
+            return Set.of();
+        }
+        return Set.copyOf(configured);
+    }
 }
