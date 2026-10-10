@@ -1,5 +1,6 @@
 package com.example.sqlquery.service.impl;
 
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import com.example.sqlquery.service.TokenBlacklistService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -32,9 +33,12 @@ public class TokenBlacklistServiceImpl implements TokenBlacklistService {
     private static final String BLACK_PREFIX = "jwt:blacklist:";
 
     private final StringRedisTemplate redisTemplate;
+    private final SqlPlatformMetrics metrics;
 
-    public TokenBlacklistServiceImpl(StringRedisTemplate redisTemplate) {
+    public TokenBlacklistServiceImpl(StringRedisTemplate redisTemplate,
+                                     SqlPlatformMetrics metrics) {
         this.redisTemplate = redisTemplate;
+        this.metrics = metrics;
     }
 
     @Override
@@ -46,9 +50,12 @@ public class TokenBlacklistServiceImpl implements TokenBlacklistService {
         try {
             redisTemplate.opsForValue().set(BLACK_PREFIX + sha256(token), "1", expire);
         } catch (Exception e) {
-            // 拉黑失败必须留日志：这是一个"本来该生效却没生效"的安全动作，
-            // 静默失败等于用户以为已经登出、实际 token 还能用到过期
-            log.error("Token 加入黑名单失败，该 token 在过期前仍然有效。expire={}", expire, e);
+            // ⚠️ 这是一个"本来该生效却没生效"的<b>安全动作</b>，绝不能静默 ——
+            // 所以走统一的降级出口：计数器 + 限流的 WARN 日志。
+            //
+            // 为什么不是 ERROR + 全栈：Redis 挂掉时<b>每个带 token 的请求都会走到这里</b>，
+            // 一级 ERROR 会把告警系统打爆，而堆栈对"连不上 Redis"这个已知原因毫无增量信息。
+            metrics.recordRedisDegradation("blacklist-write", "expire=" + expire, e);
         }
     }
 
@@ -62,14 +69,17 @@ public class TokenBlacklistServiceImpl implements TokenBlacklistService {
      * （实测复现过：Redis 停掉后除注册登录外所有接口返回「系统异常」）。
      *
      * <p>代价必须说清楚：Redis 不可用期间，<b>已登出的 token 会重新变得可用</b>，
-     * 直到 Redis 恢复。所以这里是 ERROR 级日志，而不是静默忽略。
+     * 直到 Redis 恢复。所以这里必须留下痕迹 —— 走统一的降级出口
+     * （计数器 {@code redis.degradation{reason="blacklist-read"}} + 限流日志），
+     * 而不是静默忽略。
      */
     @Override
     public boolean contains(String token) {
         try {
             return Boolean.TRUE.equals(redisTemplate.hasKey(BLACK_PREFIX + sha256(token)));
         } catch (Exception e) {
-            log.error("查询 Token 黑名单失败，本次放行（已登出的 token 在 Redis 恢复前会重新可用）", e);
+            metrics.recordRedisDegradation("blacklist-read",
+                    "已登出的 token 在 Redis 恢复前会重新可用", e);
             return false;
         }
     }

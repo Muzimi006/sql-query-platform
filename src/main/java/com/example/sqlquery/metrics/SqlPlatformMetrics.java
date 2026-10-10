@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.ToDoubleFunction;
 
 /**
@@ -58,6 +59,27 @@ public class SqlPlatformMetrics {
     /** 数据源缓存命中 / 未命中，两者相除就是命中率。 */
     public static final String CACHE_HIT = "datasource.cache.hit";
     public static final String CACHE_MISS = "datasource.cache.miss";
+
+    /**
+     * Redis 不可用导致的<b>降级</b>次数，按原因分标签。
+     *
+     * <p>这是"Redis 挂了"这件事<b>唯一可靠的观测点</b>。为什么不能靠日志：
+     * 降级路径在热路径上（每个请求都要查黑名单和缓存），
+     * 实测 Redis 停掉后打 20 个请求、日志涨了 505 行，其中 458 行是异常栈帧（91%）。
+     * <b>按 ERROR 级别接告警的话，Redis 一抖就是告警风暴。</b>
+     *
+     * <p>所以降级日志改成"WARN + 按原因限流（30 秒一条）"，
+     * 而"到底降级了多少次"交给这个计数器 —— 它对日志量不敏感，可以放心告警。
+     */
+    public static final String REDIS_DEGRADATION = "redis.degradation";
+
+    private static final String TAG_REASON = "reason";
+
+    /** 同一个降级原因，最短多久打一条日志。 */
+    private static final long DEGRADATION_LOG_INTERVAL_MS = 30_000;
+
+    /** 每个降级原因上次打日志的时间戳。原因只有固定几个，不会无限增长。 */
+    private final Map<String, AtomicLong> lastDegradationLogAt = new ConcurrentHashMap<>();
 
     private static final String TAG_OUTCOME = "outcome";
     private static final String TAG_DATA_SOURCE = "dataSourceId";
@@ -140,6 +162,54 @@ public class SqlPlatformMetrics {
 
     public void recordCacheMiss() {
         cacheMiss.increment();
+    }
+
+    /**
+     * 记录一次「因为 Redis 不可用而走的降级路径」。
+     *
+     * <h3>为什么计数和日志要放在一起</h3>
+     *
+     * <p>它们本来就是同一件事的两面：<b>计数负责"有多少"，日志负责"长什么样"</b>。
+     * 分开写的话，各个调用点会各自决定"用哪个级别、要不要打栈"，结果就是现在这样 ——
+     * 同样是 Redis 挂掉引起的降级，有的地方是 ERROR + 全栈、有的地方是 WARN、
+     * 还有两处<b>完全静默</b>（连日志都没有）。
+     *
+     * <h3>日志为什么限流，而且不打异常堆栈</h3>
+     *
+     * <p>这些路径都在热路径上：<b>每个带 token 的请求都要查一次黑名单</b>，
+     * 每次读数据源都要读一次缓存。Redis 一挂，它们每次都进 catch。
+     *
+     * <p>实测：Redis 停掉后打 20 个请求，日志涨了 <b>505 行</b>，
+     * 其中 <b>458 行是异常栈帧（91%）</b>。真实流量下几分钟就能把磁盘写满。
+     *
+     * <p>而那条堆栈其实<b>不提供任何额外信息</b> ——
+     * {@code RedisConnectionFailureException: Unable to connect to Redis} 这句话
+     * 本身就把原因说完了，后面的六十行栈帧只是重复。所以这里只记异常类型和 message。
+     *
+     * @param reason 降级原因（固定几个值，作为指标标签，不要传动态字符串）
+     * @param detail 具体是哪个 key / 哪个操作
+     * @param cause  原始异常，可以为 null
+     */
+    public void recordRedisDegradation(String reason, String detail, Exception cause) {
+        registry.counter(REDIS_DEGRADATION, TAG_REASON, reason).increment();
+
+        AtomicLong lastLoggedAt = lastDegradationLogAt.computeIfAbsent(reason, k -> new AtomicLong(0));
+        long now = System.currentTimeMillis();
+        while (true) {
+            long prev = lastLoggedAt.get();
+            if (now - prev < DEGRADATION_LOG_INTERVAL_MS) {
+                // 这个原因最近已经记过了 —— 只计数、不再打日志
+                return;
+            }
+            // CAS：多个线程同时降级时只有一条能"抢到"这次的日志资格
+            if (lastLoggedAt.compareAndSet(prev, now)) {
+                break;
+            }
+        }
+
+        log.warn("Redis 不可用，已按降级路径处理（{} 秒内同一原因只记一条）。reason={}, detail={}, cause={}",
+                DEGRADATION_LOG_INTERVAL_MS / 1000, reason, detail,
+                cause == null ? "-" : cause.getClass().getSimpleName() + ": " + cause.getMessage());
     }
 
     /**

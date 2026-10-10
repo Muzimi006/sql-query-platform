@@ -394,7 +394,7 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         } catch (Exception e) {
             // Redis 不可用：当作"没抢到锁"处理，交给 waitForRebuild 走有界等待 →
             // 超时后回源。这样 Redis 挂了只是失去缓存，不会让接口整体不可用。
-            log.warn("获取缓存回源锁失败，将按未持锁处理。lockKey={}", lockKey, e);
+            metrics.recordRedisDegradation("cache-lock", "lockKey=" + lockKey, e);
             return false;
         }
     }
@@ -403,7 +403,8 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         try {
             redisTemplate.execute(UNLOCK_SCRIPT, Collections.singletonList(lockKey), lockValue);
         } catch (Exception e) {
-            // 释放失败没关系：锁上有 TTL，到点自动消失
+            // 释放失败没关系：锁上有 TTL，到点自动消失。
+            // 这一条连降级都算不上（不影响正确性），只是留个痕迹，所以不进统一出口。
             log.warn("释放缓存回源锁失败（锁会由 TTL 自动过期）。lockKey={}", lockKey);
         }
     }
@@ -417,19 +418,31 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         }
     }
 
+    /**
+     * 读缓存。失败返回 {@code null}（当作未命中，由调用方回源）。
+     *
+     * <p>⚠️ 这里<b>原来是完全静默的</b>（连日志都没有）。静默降级的后果是：
+     * Redis 挂掉之后，接口全都正常返回 200，<b>没有任何地方能看出来缓存已经失效了</b> ——
+     * 只能从"数据库压力变大"这种间接现象去猜。
+     *
+     * <p>改成走统一降级出口之后，至少有一个计数器
+     * {@code redis.degradation{reason="cache-read"}} 和每 30 秒一条的 WARN。
+     */
     private String getCacheQuietly(String cacheKey) {
         try {
             return redisTemplate.opsForValue().get(cacheKey);
         } catch (Exception e) {
+            metrics.recordRedisDegradation("cache-read", "cacheKey=" + cacheKey, e);
             return null;
         }
     }
 
+    /** 写缓存。失败不影响主流程，但同样要留下痕迹（原来也是静默的）。 */
     private void setCacheQuietly(String cacheKey, String value, Duration ttl) {
         try {
             redisTemplate.opsForValue().set(cacheKey, value, ttl);
         } catch (Exception e) {
-            // 缓存写入失败不影响主流程
+            metrics.recordRedisDegradation("cache-write", "cacheKey=" + cacheKey, e);
         }
     }
 

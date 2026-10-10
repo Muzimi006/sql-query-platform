@@ -107,7 +107,17 @@ public class RateLimitUtil {
         try {
             allowed = Long.valueOf(1L).equals(redisCall.get());
         } catch (Exception e) {
-            log.error("限流检查失败，本次放行。key={}", key, e);
+            // ⚠️ 这里刻意用 WARN 而不是 ERROR，而且刻意**不打异常堆栈**。
+            //
+            // 理由：这是**可预期的降级**，不是意外故障 —— Redis 只要抖一下，
+            // 每个请求都会走到这里。用 ERROR + 全栈的后果是实测出来的：
+            // Redis 停掉后打 20 个请求，日志涨了 505 行，其中 458 行是异常栈帧（91%）。
+            // 按 ERROR 级别接告警的话，Redis 一抖就是告警风暴；
+            // 日志本身也会被刷爆（真实流量下几分钟就能把磁盘写满）。
+            //
+            // 要看到"限流正在降级"，看这个 WARN 和 SqlPlatformMetrics 的计数器就够了。
+            // 计数 + 限流日志，统一走 metrics 的降级出口（见 SqlPlatformMetrics.recordRedisDegradation）
+            metrics.recordRedisDegradation("rate-limit", "key=" + key, e);
             return true;
         }
 

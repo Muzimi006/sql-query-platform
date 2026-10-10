@@ -1,5 +1,6 @@
 package com.example.sqlquery.cache;
 
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import com.example.sqlquery.util.ConnectionManager;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -48,11 +49,14 @@ public class DbSourceCacheInvalidator {
 
     private final StringRedisTemplate redisTemplate;
     private final ConnectionManager connectionManager;
+    private final SqlPlatformMetrics metrics;
 
     public DbSourceCacheInvalidator(StringRedisTemplate redisTemplate,
-                                    ConnectionManager connectionManager) {
+                                    ConnectionManager connectionManager,
+                                    SqlPlatformMetrics metrics) {
         this.redisTemplate = redisTemplate;
         this.connectionManager = connectionManager;
+        this.metrics = metrics;
     }
 
     /** 缓存 key 的<b>唯一</b>构造入口：读、写、删、广播接收端都必须走这里。 */
@@ -78,9 +82,10 @@ public class DbSourceCacheInvalidator {
             redisTemplate.convertAndSend(INVALIDATION_CHANNEL, String.valueOf(id));
         } catch (Exception e) {
             // 广播失败只影响"其它实例"，本实例已经失效过了。
-            // 必须打日志：这是一个"本来该生效却没完全生效"的动作，
+            // 必须留下痕迹：这是一个"本来该生效却没完全生效"的动作，
             // 静默失败的结果是其它实例带着旧连接池继续跑，且没人知道。
-            log.error("数据源失效广播发送失败，其它实例可能继续使用旧连接池。dataSourceId={}", id, e);
+            metrics.recordRedisDegradation("invalidate-broadcast",
+                    "其它实例可能继续使用旧连接池。dataSourceId=" + id, e);
         }
     }
 
@@ -94,7 +99,7 @@ public class DbSourceCacheInvalidator {
         try {
             redisTemplate.delete(cacheKey);
         } catch (Exception e) {
-            log.warn("删除数据源缓存失败。cacheKey={}", cacheKey, e);
+            metrics.recordRedisDegradation("cache-delete", "cacheKey=" + cacheKey, e);
         }
     }
 }

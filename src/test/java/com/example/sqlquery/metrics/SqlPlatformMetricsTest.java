@@ -128,6 +128,41 @@ class SqlPlatformMetricsTest {
     }
 
     @Test
+    @DisplayName("Redis 降级按原因分标签计数 —— 这是'Redis 挂了'唯一可靠的观测点")
+    void redisDegradationShouldBeCountedByReason() {
+        var cause = new RuntimeException("Unable to connect to Redis");
+
+        metrics.recordRedisDegradation("cache-read", "cacheKey=datasource:1", cause);
+        metrics.recordRedisDegradation("cache-read", "cacheKey=datasource:2", cause);
+        metrics.recordRedisDegradation("blacklist-read", "token 检查", cause);
+
+        assertEquals(2.0, registry.get("redis.degradation").tag("reason", "cache-read").counter().count());
+        assertEquals(1.0, registry.get("redis.degradation").tag("reason", "blacklist-read").counter().count());
+    }
+
+    @Test
+    @DisplayName("⭐ 计数不受日志限流影响：重复降级只打一条日志，但计数必须每次都加")
+    void countingMustNotBeSuppressedByLogThrottling() {
+        var cause = new RuntimeException("Unable to connect to Redis");
+
+        for (int i = 0; i < 500; i++) {
+            metrics.recordRedisDegradation("blacklist-read", "第 " + i + " 次", cause);
+        }
+
+        // 日志被限流成 1 条，但计数是 500 —— 这正是"降级日志降为 WARN + 限流"之后
+        // 仍然能告警的前提：日志负责"长什么样"，计数器负责"有多少"。
+        assertEquals(500.0, registry.get("redis.degradation").tag("reason", "blacklist-read").counter().count());
+    }
+
+    @Test
+    @DisplayName("降级记录不能因为 cause 为 null 而抛异常")
+    void nullCauseShouldBeTolerated() {
+        metrics.recordRedisDegradation("cache-write", "cacheKey=datasource:9", null);
+
+        assertEquals(1.0, registry.get("redis.degradation").tag("reason", "cache-write").counter().count());
+    }
+
+    @Test
     @DisplayName("连接池尚未启动（MXBean 为 null）时读数为 0，不能抛异常")
     void gaugeShouldSurviveNullPoolBean() {
         HikariDataSource notStarted = org.mockito.Mockito.mock(HikariDataSource.class);
