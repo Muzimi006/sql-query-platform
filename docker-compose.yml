@@ -36,6 +36,12 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
+    # ⚠️ 没有这个卷的话，容器一重建，**队列定义和还没被消费的消息全部消失**。
+    #    对本项目来说后果是具体的：死信队列里那些"处理失败、需要人工查看"的消息
+    #    会跟着一起没掉 —— 而它们是排查故障的唯一线索。
+    #    （RabbitMQ 的队列默认是 durable 的，所以卷挂上之后消息本身就落盘了。）
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
 
   app:
     build: .
@@ -57,3 +63,8 @@ services:
       REDIS_HOST: redis
     ports:
       - "8080:8080"
+
+# 具名卷：让 RabbitMQ / 数据库的数据在容器重建后还在
+volumes:
+  rabbitmq-data:
+

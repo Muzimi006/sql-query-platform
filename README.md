@@ -375,10 +375,16 @@ REDIS_HOST=localhost
 | `sql/migrate_001_data_source_name_unique.sql` | 检查重复数据 → 加唯一索引 `uk_user_id_name` |
 | `sql/migrate_002_backfill_timestamps.sql` | 回填被写成 NULL 的 `created_at` / `updated_at` |
 | `sql/migrate_003_sql_review.sql` | 建 `sql_review_request` 表（审核工单） |
+| `sql/migrate_004_export_started_at.sql` | 给 `export_task` 加 `started_at`（认领时刻）并回填 —— 导出卡死判定改用它，不再把排队时间算成执行时间 |
 
 > ⚠️ **迁移脚本不会被应用自动执行**，项目也没有 schema 版本管理，必须手工跑一次。
-> 漏掉的后果是任何一次工单提交都以 `BadSqlGrammarException` 失败 ——
+> 漏掉 003 的后果是任何一次工单提交都以 `BadSqlGrammarException` 失败 ——
 > 开发过程中就真的漏过一次，最后是集成测试把它暴露出来的。
+>
+> ⚠️ 漏掉 004 更隐蔽：应用**不会报错**，而是所有导出任务在超过阈值后被
+> `ExportTaskRecoveryJob` 误判成卡死（判定列不存在 → 判定失效），
+> 或者旧行 `started_at` 为 NULL 导致永远不被回收。
+> **「少做一步」和「做错一步」在这里长得一模一样**，所以单独列出来。
 
 ### 启动
 
@@ -406,7 +412,7 @@ docker compose up -d redis rabbitmq postgres
 | 层 | 命令 | 依赖 |
 |---|---|---|
 | 单元测试 | `mvn test` | 无（AES、JDBC URL、SQL 校验、方言、分页、密码链路等纯逻辑） |
-| 集成测试 | `mvn test -Dgroups=integration -Dsurefire.excludedGroups=` | MySQL / Redis / RabbitMQ；PostgreSQL 用例另需 `docker compose up -d postgres` |
+| 集成测试 | `mvn test "-Dsurefire.excludedGroups="` | MySQL / Redis / RabbitMQ；PostgreSQL 用例另需 `docker compose up -d postgres` |
 
 需要中间件的用例标注了 `@Tag("integration")`，由 surefire 默认排除。
 
@@ -415,7 +421,8 @@ docker compose up -d redis rabbitmq postgres
 > 只写 `-Dgroups=integration` 的话，一条集成用例都不会跑，却会显示 BUILD SUCCESS。
 > 现在排除项已改成属性（`surefire.excludedGroups`），所以清空它就能放行。
 
-当前共 **285 个用例**（其中 **20 个**打 `integration` 标签，默认不跑）。集成用例覆盖：
+当前共 **315 个用例**：纯单元层 **289 个**（`mvn test`，不依赖任何中间件），
+另外 **26 个**打了 `integration` 标签、默认不跑。集成用例覆盖：
 MyBatis-Plus 装配与分页、导出的幂等与卡单补偿、**真实 PostgreSQL 下的双方言行为**、
 写语句执行与角色权限、**审核工单的端到端链路**（提交 → 审批 → MQ → 执行 → 留痕）。
 
@@ -439,6 +446,12 @@ CSV 导出编码、导出文件清理、数据源入口与状态校验、并发�
 工单补偿任务（重投 vs 判失败、绝不自动重试）、影响面预估的**文案**（扫描行数 ≠ 影响行数）、
 表结构读取的三个上限与截断说明、自然语言生成（AI 无特权 / 哨兵 / 提示词 / 代码围栏剥离）、
 以及一条**全项目级**的结构性守卫：任何 `@RequestBody` 参数少了 `@Valid` 都直接变红。
+
+这一轮补上的：队列容量参数与**双死信链路隔离**、**消息体是 JSON 而不是 JDK 序列化**
+（含「默认转换器的产物确实以 Java 序列化魔数 `0xAC` 开头」这条对照断言）、
+导出链路的**退避重试**（瞬时故障恢复 / 重试用尽进死信 / 次数可配 / 等待被中断），
+以及一条**反方向的守卫**：工单链路落库失败进死信时，`UPDATE` **只允许执行过一次** ——
+谁要是给它也加一个重试循环，这条用例会立刻变红。
 
 > 最后那条是补出来的：给审批接口传 600 字意见，拿到的不是"意见过长"，
 > 而是服务层那句"工单已被处理过" —— `@Size(max = 500)` 从头到尾没被执行过，
@@ -525,15 +538,49 @@ CSV 导出编码、导出文件清理、数据源入口与状态校验、并发�
    或者加一个"只验配置绑定与上下文刷新"的轻量检查。
 4. **限流是进程内实现**：它负责"拦住失控的脚本"，不是"扛住大流量"。
    真要在大流量下守住，靠的是网关层限流。
-5. **RabbitMQ 的队列参数变更需要人工升级**：给一个**已存在**的队列加参数（比如加死信交换机），
-   Broker 会报 `PRECONDITION_FAILED (406)`。旧环境需要先删掉 `export.queue`，应用启动时会按新参数重新声明。
-   升级到带工单链路的版本时同理，可能需要先删掉旧的 `review.queue`。
+5. **RabbitMQ 的队列参数（或消息格式）变更需要人工升级**：队列参数是**队列本身的属性**，
+   给一个已存在的同名队列改参数，Broker 会用 `PRECONDITION_FAILED (406)` **拒绝声明**，应用会因此起不来。
+   升级到当前版本需要做两件事：
+
+   ```bash
+   # ① 删除旧队列（应用启动时会按新参数重新声明）
+   docker exec sql-query-rabbitmq rabbitmqctl delete_queue export.queue
+   docker exec sql-query-rabbitmq rabbitmqctl delete_queue review.queue
+   # ② 两个队列现在都带 x-max-length=10000 + x-overflow=reject-publish-dlx
+   #    确认方式：
+   docker exec sql-query-rabbitmq rabbitmqctl list_queues name arguments
+   ```
+
+   ⚠️ 第二步同时也是**消息格式的切换点**：消息体现在是 JSON（`Jackson2JsonMessageConverter`）而不是 JDK 序列化。
+   删队列之前**请先确认队列是空的**，否则里面那些 JDK 序列化的旧消息会被新消费者反序列化失败 → nack → 进死信。
+   （本次升级时两个队列都是 0 条消息。）
 6. **自然语言生成 SQL 默认关闭**：它要读表结构并**发往外部模型服务**，这是一次真实的数据出境，
    打开前需要有人为此签字。**前端页面尚未实现**，只验证了后端接口与契约。
 7. **工单链路自身新增的边界**：工单表没有保留 / 归档策略、无法撤回已批准工单、
    补偿任务是头部优先、执行失败无法自动回滚、`SchemaIntrospector` 的缓存是 JVM 内的、
-   "批准成功但投递失败"只有日志没有指标，以及 `ExportConsumer` 的回写有同款潜伏缺陷（本轮未改）。
+   "批准成功但投递失败"只有日志没有指标。
    完整清单与逐条理由见 `SQL查询平台-审核工单与NL2SQL落地方案.md` 第 7 节。
+
+   > ✅ 这一条里原来还有一句「`ExportConsumer` 的回写有同款潜伏缺陷（本轮未改）」——
+   > **已经修了**：导出链路的回写改成了带认领令牌的条件更新（`WHERE status = 'RUNNING'`），
+   > 并把卡死判定从 `created_at` 换成了 `started_at`（见档案 G-01）。
+
+8. **⭐ 压测量出来的两个真实瓶颈，以及一个「量出来但没修」的缺陷**（完整数据见 `高并发压测报告.md`）：
+
+   - **业务数据源连接池的 5 条连接是第一个瓶颈**。它表现为「并发越高成功吞吐越低」
+     （并发 8 → 64 时，296.5 → 87.5 QPS，错误率 14% → 92%）；
+     把并发闸门放大到 1000 之后，同样负载是 **570.8 QPS / 0% 错误**。
+     测出来的是「5 是瓶颈」，**没有**验证「调大就能解决」—— 那是容量规划，不是改一个常量。
+   - **第二个瓶颈是应用主库的 Hikari 池（max=10）**，它是 ~570 QPS 那个平台值的真因
+     （每个查询请求要写 2 次主库）。
+   - ⚠️ **未修**：被并发闸门拒绝的请求**仍然会往主库写一条审计日志**
+     （`AuditLogAspect` 是 `@Before`，跑在 Service 层的闸门之前）——
+     **闸门保护了业务库，代价却记在主库上**，这正是上面那个负向扩展的根因。
+     三条候选修法各有代价，本轮没有在没想清楚的情况下动请求生命周期，详见档案 G-07。
+
+9. **压测是在一台开发机上做的，数字只能横向对比**：压测客户端、应用、MySQL、Redis、RabbitMQ、
+   PostgreSQL 全在同一台 16 核机器上，且压测期间机器上还有其它进程在工作，
+   **不能用作容量规划**。报告里单独用两节逐条列了「没测到的」和「不可靠的」。
 
 ## 安全说明
 
