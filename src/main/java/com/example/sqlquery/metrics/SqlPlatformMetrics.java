@@ -271,6 +271,25 @@ public class SqlPlatformMetrics {
     }
 
     /**
+     * 保留策略清理掉的行数，按表分标签。
+     *
+     * <p>⚠️ 为什么清理<b>必须</b>有指标：删除是不可逆的，"昨天删了多少"是事后唯一能查的东西。
+     * 一条不动的曲线同样有意义 —— 它说明"该清理的没被清"（表会一直涨）。
+     */
+    public static final String RETENTION_DELETED = "retention.deleted";
+
+    public void recordRetentionDeleted(String target, int rows) {
+        registry.counter(RETENTION_DELETED, "target", target).increment(rows);
+    }
+
+    /** 保留策略某一项失败的次数（查询或删除抛异常）。持续大于 0 = 表在无界增长。 */
+    public static final String RETENTION_FAILED = "retention.failed";
+
+    public void recordRetentionFailed(String target) {
+        registry.counter(RETENTION_FAILED, "target", target).increment();
+    }
+
+    /**
      * 记录一次被并发闸门拒绝。
      *
      * @param reason {@code per-user} / {@code per-data-source}
