@@ -16,7 +16,9 @@ import com.example.sqlquery.entity.SqlReviewRequest;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.exception.SqlTypeNotAllowedException;
 import com.example.sqlquery.metrics.SqlPlatformMetrics;
+import com.example.sqlquery.entity.SqlReviewUndo;
 import com.example.sqlquery.mapper.SqlReviewRequestMapper;
+import com.example.sqlquery.mapper.SqlReviewUndoMapper;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.service.SqlImpactAnalyzer;
 import com.example.sqlquery.service.SqlPermissionService;
@@ -61,19 +63,22 @@ public class SqlReviewServiceImpl implements SqlReviewService {
     private final SqlImpactAnalyzer impactAnalyzer;
     private final RabbitTemplate rabbitTemplate;
     private final SqlPlatformMetrics metrics;
+    private final SqlReviewUndoMapper undoMapper;
 
     public SqlReviewServiceImpl(SqlReviewRequestMapper reviewMapper,
                                 DbSourceService dbSourceService,
                                 SqlPermissionService sqlPermissionService,
                                 SqlImpactAnalyzer impactAnalyzer,
                                 RabbitTemplate rabbitTemplate,
-                                SqlPlatformMetrics metrics) {
+                                SqlPlatformMetrics metrics,
+                                SqlReviewUndoMapper undoMapper) {
         this.reviewMapper = reviewMapper;
         this.dbSourceService = dbSourceService;
         this.sqlPermissionService = sqlPermissionService;
         this.impactAnalyzer = impactAnalyzer;
         this.rabbitTemplate = rabbitTemplate;
         this.metrics = metrics;
+        this.undoMapper = undoMapper;
     }
 
     /**
@@ -223,7 +228,28 @@ public class SqlReviewServiceImpl implements SqlReviewService {
             throw new BusinessException("工单不存在");
         }
 
-        return toVO(request);
+        return withUndoInfo(toVO(request));
+    }
+
+    /**
+     * 把「前镜像留存」的信息挂到工单详情上。
+     *
+     * <p>⚠️ <b>只在详情里查</b>，不在列表里查：列表一页 20 条，
+     * 每条再查一次 undo 就是 20 次额外的查询（典型的 N+1）。
+     * 而这个信息只在「我准备回滚了」的时候才需要看。
+     */
+    private SqlReviewRequestVO withUndoInfo(SqlReviewRequestVO vo) {
+        SqlReviewUndo undo = undoMapper.selectById(vo.getId());
+        if (undo == null) {
+            // 工单还没执行（或者执行时留存没落库）→ 如实留空。
+            // 不要填一个「无」：那会和「执行了但没有回滚依据」混起来
+            return vo;
+        }
+        vo.setUndoStatus(undo.getCaptureStatus());
+        vo.setUndoRowCount(undo.getRowCount());
+        vo.setUndoReason(undo.getReason());
+        vo.setInverseSql(undo.getInverseSql());
+        return vo;
     }
 
     @Override

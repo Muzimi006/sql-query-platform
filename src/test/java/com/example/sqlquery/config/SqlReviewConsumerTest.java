@@ -10,7 +10,10 @@ import com.example.sqlquery.entity.SqlReviewRequest;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.mapper.SqlReviewRequestMapper;
 import com.example.sqlquery.service.DbSourceService;
+import com.example.sqlquery.common.UndoStatus;
+import com.example.sqlquery.mapper.SqlReviewUndoMapper;
 import com.example.sqlquery.service.SqlPermissionService;
+import com.example.sqlquery.service.SqlUndoRecorder;
 import com.example.sqlquery.util.ConnectionManager;
 import com.example.sqlquery.util.SqlType;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -60,6 +63,8 @@ class SqlReviewConsumerTest {
 
     private Connection connection;
     private Statement statement;
+    private SqlUndoRecorder undoRecorder;
+    private SqlReviewUndoMapper undoMapper;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -71,8 +76,19 @@ class SqlReviewConsumerTest {
         connectionManager = Mockito.mock(ConnectionManager.class);
         permissionService = Mockito.mock(SqlPermissionService.class);
 
-        consumer = new SqlReviewConsumer(reviewMapper, dbSourceService, connectionManager, permissionService);
-        ReflectionTestUtils.setField(consumer, "queryTimeoutSeconds", 120);
+        // ⭐ 「取像 + 执行」已经搬到 SqlUndoRecorder 里了（它需要真实 JDBC 元数据，
+        //    不是 mock 出来的 connection 能给的）—— 所以这里把它整个 mock 掉，
+        //    本用例只验消费者自己的逻辑：认领 → 执行 → 留存 → 回写 → ack/nack。
+        //    SqlUndoRecorder 自己的行为由 SqlUndoRecorderTest 和集成用例覆盖。
+        undoRecorder = Mockito.mock(SqlUndoRecorder.class);
+        undoMapper = Mockito.mock(SqlReviewUndoMapper.class);
+
+        consumer = new SqlReviewConsumer(reviewMapper, dbSourceService, connectionManager,
+                permissionService, undoRecorder, undoMapper);
+
+        // 默认：执行成功、改 1 行、留存成功。个别用例再按需覆盖
+        Mockito.when(undoRecorder.executeWithUndo(ArgumentMatchers.any(), ArgumentMatchers.anyString()))
+                .thenReturn(new SqlUndoRecorder.WriteResult(1, captured(1)));
 
         connection = Mockito.mock(Connection.class);
         statement = Mockito.mock(Statement.class);
@@ -82,6 +98,12 @@ class SqlReviewConsumerTest {
         Mockito.when(permissionService.getReviewableTypes())
                 .thenReturn(Set.of(SqlType.INSERT, SqlType.UPDATE, SqlType.DELETE));
         Mockito.when(dbSourceService.getEnabledByIdAndUserId(1L, 2L)).thenReturn(dbSource());
+    }
+
+    /** 构造一个「已留存」的 UndoCapture，给桩用。 */
+    private static SqlUndoRecorder.UndoCapture captured(int rows) {
+        return new SqlUndoRecorder.UndoCapture(UndoStatus.CAPTURED, null, "t_user", rows,
+                "[]", "[]", "UPDATE t_user SET nickname = 'old' WHERE id = 1;");
     }
 
     private DbSource dbSource() {
@@ -170,7 +192,8 @@ class SqlReviewConsumerTest {
     void executeShouldRecordAffectedRows() throws Exception {
         Mockito.when(reviewMapper.selectById(1L))
                 .thenReturn(ticket("update t_user set nickname = 'x' where id = 1"));
-        Mockito.when(statement.executeUpdate(ArgumentMatchers.anyString())).thenReturn(7);
+        Mockito.when(undoRecorder.executeWithUndo(ArgumentMatchers.any(), ArgumentMatchers.anyString()))
+                .thenReturn(new SqlUndoRecorder.WriteResult(7, captured(3)));
 
         consumer.execute(1L);
 
@@ -184,8 +207,10 @@ class SqlReviewConsumerTest {
         assertTrue(params.values().contains(ReviewStatus.EXECUTED), "实际参数：" + params.values());
         assertTrue(params.values().contains(7L), "影响行数必须落库，实际参数：" + params.values());
 
-        // 超时也必须设上：工单用的是和查询共用的连接池（上限 5）
-        Mockito.verify(statement).setQueryTimeout(120);
+        // 执行必须真的交给了带留存的那条路径，而且**带的是数据库里存的那条 SQL**
+        // （不是前端再传一次 —— 那是审批类系统最经典的 TOCTOU 漏洞）
+        Mockito.verify(undoRecorder).executeWithUndo(ArgumentMatchers.any(),
+                ArgumentMatchers.eq("update t_user set nickname = 'x' where id = 1"));
     }
 
     @Test
@@ -193,7 +218,8 @@ class SqlReviewConsumerTest {
     void writeBackMustCarryTheClaimToken() throws Exception {
         Mockito.when(reviewMapper.selectById(1L))
                 .thenReturn(ticket("update t_user set nickname = 'x' where id = 1"));
-        Mockito.when(statement.executeUpdate(ArgumentMatchers.anyString())).thenReturn(1);
+        Mockito.when(undoRecorder.executeWithUndo(ArgumentMatchers.any(), ArgumentMatchers.anyString()))
+                .thenReturn(new SqlUndoRecorder.WriteResult(1, captured(1)));
         // 0 行 = 补偿任务已经把它判成失败了
         Mockito.when(reviewMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.any())).thenReturn(0);
 
@@ -264,7 +290,7 @@ class SqlReviewConsumerTest {
     void sqlFailureShouldBeRecordedNotThrown() throws Exception {
         Mockito.when(reviewMapper.selectById(1L))
                 .thenReturn(ticket("update t_user set nickname = 'x' where id = 1"));
-        Mockito.when(statement.executeUpdate(ArgumentMatchers.anyString()))
+        Mockito.when(undoRecorder.executeWithUndo(ArgumentMatchers.any(), ArgumentMatchers.anyString()))
                 .thenThrow(new java.sql.SQLException("Unknown column 'nickname'"));
 
         consumer.execute(1L);
@@ -283,7 +309,8 @@ class SqlReviewConsumerTest {
                 .thenThrow(new RuntimeException("平台库不可用"));
         Mockito.when(reviewMapper.selectById(1L))
                 .thenReturn(ticket("update t_user set nickname = 'x' where id = 1"));
-        Mockito.when(statement.executeUpdate(ArgumentMatchers.anyString())).thenReturn(1);
+        Mockito.when(undoRecorder.executeWithUndo(ArgumentMatchers.any(), ArgumentMatchers.anyString()))
+                .thenReturn(new SqlUndoRecorder.WriteResult(1, captured(1)));
 
         com.rabbitmq.client.Channel channel = Mockito.mock(com.rabbitmq.client.Channel.class);
         consumer.handle(1L, channel, 42L);
@@ -300,7 +327,8 @@ class SqlReviewConsumerTest {
                 .thenThrow(new RuntimeException("平台库不可用"));
         Mockito.when(reviewMapper.selectById(1L))
                 .thenReturn(ticket("update t_user set nickname = 'x' where id = 1"));
-        Mockito.when(statement.executeUpdate(ArgumentMatchers.anyString())).thenReturn(1);
+        Mockito.when(undoRecorder.executeWithUndo(ArgumentMatchers.any(), ArgumentMatchers.anyString()))
+                .thenReturn(new SqlUndoRecorder.WriteResult(1, captured(1)));
 
         com.rabbitmq.client.Channel channel = Mockito.mock(com.rabbitmq.client.Channel.class);
         consumer.handle(1L, channel, 42L);
@@ -309,7 +337,8 @@ class SqlReviewConsumerTest {
         // 因为重跑一次 UPDATE 就是再改一次数据。这条断言就是那条铁律的看门人：
         // 谁要是给这个消费者也加一个重试循环，这里会立刻红。
         // 至于"执行到一半"的工单，交给 SqlReviewRecoveryJob 判 EXECUTING 超时 → FAILED。
-        Mockito.verify(statement, Mockito.times(1)).executeUpdate(Mockito.anyString());
+        Mockito.verify(undoRecorder, Mockito.times(1))
+                .executeWithUndo(ArgumentMatchers.any(), ArgumentMatchers.anyString());
     }
 
     @Test

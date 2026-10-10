@@ -7,6 +7,9 @@ import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.entity.SqlReviewRequest;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.mapper.SqlReviewRequestMapper;
+import com.example.sqlquery.mapper.SqlReviewUndoMapper;
+import com.example.sqlquery.service.SqlUndoRecorder;
+import com.example.sqlquery.entity.SqlReviewUndo;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.service.SqlPermissionService;
 import com.example.sqlquery.util.ConnectionManager;
@@ -66,32 +69,29 @@ import java.time.LocalDateTime;
 @Component
 public class SqlReviewConsumer {
 
-    /**
-     * 单条工单 SQL 的执行超时（秒）。
-     *
-     * <p>比查询链路的 30 秒宽 —— 工单本来就是给「批量订正」用的；
-     * 但<b>必须有</b>：它用的是和数据源同一个连接池（上限 5），
-     * 一条挂住的 UPDATE 会慢慢把池子占满，把正常查询一起拖垮。
-     *
-     * <p>⚠️ 这个值必须<b>明显小于</b> {@code review.stuck-executing-minutes}
-     * （卡死判定阈值），否则补偿任务会把一个仍在正常执行的工单判成卡死。
-     */
-    @Value("${review.query-timeout-seconds:120}")
-    private int queryTimeoutSeconds;
+    // 注：单条工单 SQL 的执行超时（review.query-timeout-seconds）现在由
+    // SqlUndoRecorder 持有 —— 因为「取像 + 执行」必须在同一个连接上完成，
+    // 执行那一步已经搬到那里去了。同一件事配两个地方，早晚有人只改一个。
 
     private final SqlReviewRequestMapper reviewMapper;
     private final DbSourceService dbSourceService;
     private final ConnectionManager connectionManager;
     private final SqlPermissionService sqlPermissionService;
+    private final SqlUndoRecorder undoRecorder;
+    private final SqlReviewUndoMapper undoMapper;
 
     public SqlReviewConsumer(SqlReviewRequestMapper reviewMapper,
                              DbSourceService dbSourceService,
                              ConnectionManager connectionManager,
-                             SqlPermissionService sqlPermissionService) {
+                             SqlPermissionService sqlPermissionService,
+                             SqlUndoRecorder undoRecorder,
+                             SqlReviewUndoMapper undoMapper) {
         this.reviewMapper = reviewMapper;
         this.dbSourceService = dbSourceService;
         this.connectionManager = connectionManager;
         this.sqlPermissionService = sqlPermissionService;
+        this.undoRecorder = undoRecorder;
+        this.undoMapper = undoMapper;
     }
 
     /**
@@ -180,12 +180,19 @@ public class SqlReviewConsumer {
                 throw new BusinessException("工单只执行写语句，这条是查询语句，请到查询页执行");
             }
 
-            long affectedRows = doExecute(dbSource, request.getSqlText());
+            // ⭐ 带留存的执行：执行前后各取一次行镜像，并生成反向 SQL。
+            //    取像与写入在**同一个事务**里（见 SqlUndoRecorder），
+            //    所以「改了但没留痕」和「留了痕但没改」都不会发生。
+            SqlUndoRecorder.WriteResult result = undoRecorder.executeWithUndo(
+                    dbSource, request.getSqlText());
 
-            finish(reviewId, ReviewStatus.EXECUTED, affectedRows, null);
+            persistUndo(reviewId, result.capture());
 
-            log.info("工单执行成功。reviewId={}, sqlType={}, affectedRows={}",
-                    reviewId, validation.sqlType(), affectedRows);
+            finish(reviewId, ReviewStatus.EXECUTED, result.affectedRows(), null);
+
+            log.info("工单执行成功。reviewId={}, sqlType={}, affectedRows={}, undo={}",
+                    reviewId, validation.sqlType(), result.affectedRows(),
+                    result.capture().status());
         } catch (Exception e) {
             log.error("工单执行失败。reviewId={}", reviewId, e);
 
@@ -239,19 +246,41 @@ public class SqlReviewConsumer {
     }
 
     /**
-     * 真正把 SQL 发到业务库上。
+     * 把前镜像 / 反向 SQL 落库。
      *
-     * <p>⚠️ 这里用 {@code executeUpdate}，<b>不是</b>查询链路那个 {@code execute}。
-     * 差别在返回值：工单需要记录「改了多少行」，
-     * 而 {@code execute} 只告诉你「有没有结果集」，影响行数还得再取一次。
-     * 语义上也更准确 —— 这条路径上本来就不该出现查询。
+     * <h2>⚠️ 为什么这一步失败<b>不能</b>把工单标成 FAILED</h2>
+     *
+     * <p>调用它的时候，<b>业务库上的写语句已经提交了</b>
+     * （{@link SqlUndoRecorder} 在一个事务里完成了取像 + 执行 + 提交）。
+     * 此时如果把异常抛出去，工单会被标成 FAILED —— 而<b>数据其实已经改了</b>。
+     * 那是最坏的一种状态：<b>审批人以为没生效，实际生效了。</b>
+     *
+     * <p>所以这里吞掉异常、但<b>绝不静默</b>：把反向 SQL 原样打进 ERROR 日志。
+     * 留痕丢在数据库里还能从日志里捞回来，反过来就不行了。
      */
-    private long doExecute(DbSource dbSource, String sql) throws SQLException {
-        try (Connection connection = connectionManager.getConnection(dbSource);
-             Statement statement = connection.createStatement()) {
+    private void persistUndo(Long reviewId, SqlUndoRecorder.UndoCapture capture) {
+        SqlReviewUndo undo = new SqlReviewUndo();
+        undo.setReviewId(reviewId);
+        undo.setCaptureStatus(capture.status());
+        undo.setReason(capture.reason());
+        undo.setTableName(capture.tableName());
+        undo.setRowCount(capture.rowCount());
+        undo.setBeforeJson(capture.beforeJson());
+        undo.setAfterJson(capture.afterJson());
+        undo.setInverseSql(capture.inverseSql());
+        undo.setCreatedAt(LocalDateTime.now());
 
-            statement.setQueryTimeout(queryTimeoutSeconds);
-            return statement.executeUpdate(sql);
+        try {
+            // 用 replace 而不是 insert：工单被重投时（同一 reviewId 再来一次），
+            // 应该覆盖上一笔，而不是因为主键冲突把这次执行变成失败
+            undoMapper.deleteById(reviewId);
+            undoMapper.insert(undo);
+        } catch (Exception e) {
+            log.error("工单执行结果未能留存（数据已改动，反向 SQL 见本条日志）。reviewId={}, status={}",
+                    reviewId, capture.status(), e);
+            if (capture.inverseSql() != null && !capture.inverseSql().isEmpty()) {
+                log.error("未落库的反向 SQL（reviewId={}）：\n{}", reviewId, capture.inverseSql());
+            }
         }
     }
 

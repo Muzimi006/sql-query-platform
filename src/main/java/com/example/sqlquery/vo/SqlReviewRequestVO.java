@@ -51,6 +51,29 @@ public class SqlReviewRequestVO {
 
     private LocalDateTime executedAt;
 
+    /**
+     * ⭐ 前镜像留存状态（见 {@code UndoStatus}）：CAPTURED / SKIPPED / FAILED。
+     *
+     * <p>它回答的是「这次执行<b>有没有回滚依据</b>」——
+     * 在它之前，这个问题在平台上根本没有答案。
+     */
+    private String undoStatus;
+
+    /** 留存了多少行的前镜像。 */
+    private Integer undoRowCount;
+
+    /** 没有留存下来时的原因（人话，直接展示）。 */
+    private String undoReason;
+
+    /**
+     * 由前镜像生成的反向 SQL。
+     *
+     * <p>⚠️ <b>只用于给人核对</b>，平台上没有任何接口会执行它 ——
+     * 要回滚就把这段 SQL 复制出来，<b>作为一条新工单提交</b>，
+     * 走完全相同的审批路径。理由见 {@code SqlUndoRecorder} 的类注释。
+     */
+    private String inverseSql;
+
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;

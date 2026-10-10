@@ -265,6 +265,23 @@ public enum SqlDialect {
         return defaultPort;
     }
 
+/**
+     * 引用一个标识符（表名 / 列名）。
+     *
+     * <p>⚠️ MySQL 用反引号、PostgreSQL 用双引号 —— 这是两种方言最常见的
+     * "看起来一样、其实不一样"的地方之一。写死一种，另一条链路在遇到保留字
+     * 列名（比如 {@code order}、{@code status}）时就会炸。
+     *
+     * <p>⚠️ 引用只能防"保留字冲突"，<b>防不了"把恶意内容拼进 SQL"</b> ——
+     * 后者要靠调用方对标识符字符集做白名单校验（见 {@code SqlUndoRecorder}）。
+     */
+    public String quoteIdentifier(String identifier) {
+        if (this == MYSQL) {
+            return "`" + identifier.replace("`", "``") + "`";
+        }
+        return "\"" + identifier.replace("\"", "\"\"") + "\"";
+    }
+
     /** 该方言是否支持 {@code $$...$$} / {@code $tag$...$tag$} 形式的字符串字面量。 */
     public boolean supportsDollarQuoting() {
         return supportsDollarQuoting;

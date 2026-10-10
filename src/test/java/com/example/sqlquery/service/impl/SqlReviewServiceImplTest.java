@@ -61,6 +61,7 @@ class SqlReviewServiceImplTest {
     private SqlImpactAnalyzer impactAnalyzer;
     private RabbitTemplate rabbitTemplate;
     private SqlPlatformMetrics metrics;
+    private com.example.sqlquery.mapper.SqlReviewUndoMapper undoMapper;
     private SqlReviewServiceImpl service;
 
     private static final Set<SqlType> REVIEWABLE =
@@ -77,9 +78,11 @@ class SqlReviewServiceImplTest {
         impactAnalyzer = Mockito.mock(SqlImpactAnalyzer.class);
         rabbitTemplate = Mockito.mock(RabbitTemplate.class);
         metrics = Mockito.mock(SqlPlatformMetrics.class);
+        undoMapper = Mockito.mock(com.example.sqlquery.mapper.SqlReviewUndoMapper.class);
 
         service = new SqlReviewServiceImpl(
-                reviewMapper, dbSourceService, permissionService, impactAnalyzer, rabbitTemplate, metrics);
+                reviewMapper, dbSourceService, permissionService, impactAnalyzer, rabbitTemplate, metrics,
+                undoMapper);
 
         UserContext.set(1L);
         UserContext.setRole(UserRole.USER);
