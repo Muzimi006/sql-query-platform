@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.core.toolkit.support.SFunction;
 import com.example.sqlquery.common.ExportStatus;
 import com.example.sqlquery.entity.ExportTask;
 import com.example.sqlquery.mapper.ExportTaskMapper;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -94,8 +95,11 @@ public class ExportTaskRecoveryJob {
     @Value("${export.stuck-running-minutes:10}")
     private int stuckRunningMinutes;
 
-    public ExportTaskRecoveryJob(ExportTaskMapper exportTaskMapper) {
+    private final SqlPlatformMetrics metrics;
+
+    public ExportTaskRecoveryJob(ExportTaskMapper exportTaskMapper, SqlPlatformMetrics metrics) {
         this.exportTaskMapper = exportTaskMapper;
+        this.metrics = metrics;
     }
 
     /** 默认每 5 分钟扫一次。 */
@@ -132,7 +136,15 @@ public class ExportTaskRecoveryJob {
         List<ExportTask> stuck = exportTaskMapper.selectList(
                 new LambdaQueryWrapper<ExportTask>()
                         .eq(ExportTask::getStatus, stuckStatus)
-                        .lt(timeColumn, deadline));
+                        // ⚠️ 必须把 NULL 一起收进来，而且**必须用 and(...) 包起来**：
+                        //    .lt(...).or().isNull(...) 会展开成 `status = ? AND time < ? OR time IS NULL`
+                        //    —— SQL 里 AND 比 OR 结合得紧，那会变成「(状态对 且 超时) 或 (时间为空)」，
+                        //    把**别的状态**的 NULL 行也捞进来。包一层括号才是 (超时 或 时间为空)。
+                        //
+                        // 为什么要收 NULL：判定用的是 lt，而 NULL < 任何值都**不成立** ——
+                        // 一条时间列为 NULL 的记录会永久停在中间态，既不被重投也不被判失败，
+                        // 而且没有任何信号。这几列在 DDL 里都可空，migrate_002/004 都回填过历史 NULL。
+                        .and(w -> w.lt(timeColumn, deadline).or().isNull(timeColumn)));
 
         if (stuck.isEmpty()) {
             return;
@@ -150,6 +162,8 @@ public class ExportTaskRecoveryJob {
                     .set(ExportTask::getFinishedAt, LocalDateTime.now()));
 
             if (affected == 1) {
+                // ⭐ 补偿任务以前只有 WARN 日志 —— 批量发生时（事故后）没人能立刻知道规模
+                metrics.recordRecoveryFailed(SqlPlatformMetrics.LINK_EXPORT);
                 log.warn("导出任务长时间停留在 {}，已标记为失败。taskId={}, 超时阈值={}分钟",
                         stuckStatus, task.getId(), stuckRunningMinutes);
             } else {

@@ -447,7 +447,7 @@ docker compose up -d redis rabbitmq postgres
 > 只写 `-Dgroups=integration` 的话，一条集成用例都不会跑，却会显示 BUILD SUCCESS。
 > 现在排除项已改成属性（`surefire.excludedGroups`），所以清空它就能放行。
 
-当前共 **352 个用例**：纯单元层 **315 个**（`mvn test`，不依赖任何中间件），
+当前共 **355 个用例**：纯单元层 **318 个**（`mvn test`，不依赖任何中间件），
 另外 **37 个**打了 `integration` 标签、默认不跑。集成用例覆盖：
 MyBatis-Plus 装配与分页、导出的幂等与卡单补偿、**真实 PostgreSQL 下的双方言行为**、
 写语句执行与角色权限、**审核工单的端到端链路**（提交 → 审批 → MQ → 执行 → 留痕）。

@@ -80,7 +80,8 @@ public class ExportServiceImpl implements ExportService {
         // 却不知道该把哪条任务标记成失败（见 RabbitConfirmConfig）。
         try {
             rabbitTemplate.convertAndSend(RabbitConfig.EXPORT_QUEUE, task.getId(),
-                    new CorrelationData(String.valueOf(task.getId())));
+                    // ⚠️ 前缀不能省：确认回调要靠它分辨「是哪条链路的消息没送到」
+                    new CorrelationData("export-" + task.getId()));
         } catch (Exception e) {
             // ⚠️ 投递失败时必须**立刻把任务标掉**，否则会留下一条永远 PENDING 的孤儿行：
             //    它既不会被执行，也要等 10 分钟才被补偿任务判失败，而用户当场看到的是

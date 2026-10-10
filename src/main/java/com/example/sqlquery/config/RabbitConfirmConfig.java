@@ -2,6 +2,7 @@ package com.example.sqlquery.config;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.context.annotation.Configuration;
 
@@ -43,7 +44,10 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class RabbitConfirmConfig {
 
-    public RabbitConfirmConfig(RabbitTemplate rabbitTemplate) {
+    private final SqlPlatformMetrics metrics;
+
+    public RabbitConfirmConfig(RabbitTemplate rabbitTemplate, SqlPlatformMetrics metrics) {
+        this.metrics = metrics;
         rabbitTemplate.setConfirmCallback(this::onConfirm);
         rabbitTemplate.setReturnsCallback(this::onReturned);
     }
@@ -56,6 +60,11 @@ public class RabbitConfirmConfig {
             log.debug("消息已被 Broker 确认。correlationId={}", correlationId);
             return;
         }
+
+        // ⭐ 这里也要计数：在这之前 `mq_publish_failed` **只覆盖"convertAndSend 同步抛异常"**
+        //    那一半路径，而"调用成功了、但 Broker 随后否认"这一半只有日志。
+        //    两者合起来才是完整的"消息没进 Broker"。
+        metrics.recordPublishFailure(linkOf(correlationId));
 
         // 走到这里说明消息<b>没有</b>进入 Broker，对应任务会一直停在初始状态。
         //
@@ -77,9 +86,24 @@ public class RabbitConfirmConfig {
         }
     }
 
-    /** 消息到了交换机但路由不到任何队列时被退回。 */
+    /**
+     * 消息到了交换机但路由不到任何队列时被退回。
+     *
+     * <p>⚠️ 退回分不出是哪条链路（{@code ReturnedMessage} 里没有 CorrelationData），
+     * 所以记成一条不带标签的 {@code mq.message.returned} —— 能告警就够了，定位靠日志里的 exchange/routingKey。
+     */
     private void onReturned(org.springframework.amqp.core.ReturnedMessage returned) {
+        metrics.recordReturnedMessage();
         log.error("消息无法路由到任何队列，已被退回。exchange={}, routingKey={}, replyText={}",
                 returned.getExchange(), returned.getRoutingKey(), returned.getReplyText());
+    }
+
+    /** 从 CorrelationData 的 id 认出是哪条链路（两个 Producer 都带前缀）。 */
+    private static String linkOf(String correlationId) {
+        if (correlationId != null && correlationId.startsWith("review-")) {
+            return SqlPlatformMetrics.LINK_REVIEW;
+        }
+        // 导出侧：新版本带 export- 前缀，旧格式是纯数字 —— 同样按导出处理
+        return SqlPlatformMetrics.LINK_EXPORT;
     }
 }

@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.example.sqlquery.common.ExportStatus;
 import com.example.sqlquery.entity.ExportTask;
 import com.example.sqlquery.mapper.ExportTaskMapper;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -41,6 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ExportTaskRecoveryJobTest {
 
     private ExportTaskMapper exportTaskMapper;
+    private SqlPlatformMetrics metrics;
     private ExportTaskRecoveryJob job;
 
     @BeforeEach
@@ -49,7 +51,8 @@ class ExportTaskRecoveryJobTest {
                 new MapperBuilderAssistant(new MybatisConfiguration(), ""), ExportTask.class);
 
         exportTaskMapper = Mockito.mock(ExportTaskMapper.class);
-        job = new ExportTaskRecoveryJob(exportTaskMapper);
+        metrics = Mockito.mock(SqlPlatformMetrics.class);
+        job = new ExportTaskRecoveryJob(exportTaskMapper, metrics);
         ReflectionTestUtils.setField(job, "stuckRunningMinutes", 10);
     }
 
@@ -59,6 +62,28 @@ class ExportTaskRecoveryJobTest {
         task.setStatus(status);
         task.setCreatedAt(LocalDateTime.now().minusHours(1));
         return task;
+    }
+
+    @Test
+    @DisplayName("⭐ 卡死判定必须把时间列为 NULL 的记录也收进来（NULL < 任何值都不成立）")
+    void stuckCheckMustAlsoCatchNullTimeColumn() {
+        Mockito.when(exportTaskMapper.selectList(ArgumentMatchers.<Wrapper<ExportTask>>any()))
+                .thenReturn(List.of());
+
+        job.failStuckTasks();
+
+        ArgumentCaptor<Wrapper<ExportTask>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        Mockito.verify(exportTaskMapper, Mockito.atLeastOnce()).selectList(captor.capture());
+        String where = captor.getAllValues().get(0).getSqlSegment();
+
+        // 少了 IS NULL，一条时间列为 NULL 的记录会**永久停在中间态**：
+        // 既不会被重投也不会被判失败，而且零信号
+        //（migrate_002 / migrate_004 的存在证明这类事故真发生过）。
+        assertTrue(where.contains("IS NULL"), "判定条件必须覆盖 NULL，实际：" + where);
+
+        // ⚠️ 而且 OR 必须被 and(...) 包成括号组 —— 否则 SQL 的 AND 优先级会让它变成
+        //    「(状态对 且 超时) 或 (时间为空)」，把别的状态的 NULL 行也捞进来。
+        assertTrue(where.contains("("), "OR 条件必须成组，实际：" + where);
     }
 
     @Test

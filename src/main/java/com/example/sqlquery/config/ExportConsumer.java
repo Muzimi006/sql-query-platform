@@ -352,6 +352,8 @@ public class ExportConsumer {
         // 和工单链路（那个必须显式写，因为判定用的是 updated_at）不同。
 
         if (affected == 0) {
+            // ⭐ 「数据已经改了，但状态没写回去」的唯一信号（见 RESULT_WRITEBACK_DROPPED）
+            metrics.recordResultDropped(SqlPlatformMetrics.LINK_EXPORT);
             log.error("导出任务已不再处于 RUNNING，本次结果未落库，需人工核对。"
                     + "taskId={}, 本次结果={}", taskId, status);
         }

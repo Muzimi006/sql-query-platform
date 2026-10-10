@@ -13,6 +13,7 @@ import com.example.sqlquery.util.ConnectionManager;
 import com.example.sqlquery.util.DbSourceCircuitBreaker;
 import com.example.sqlquery.util.QueryConcurrencyGuard;
 import com.example.sqlquery.util.SqlType;
+import com.example.sqlquery.vo.QueryVO;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -25,7 +26,9 @@ import java.sql.SQLTransientConnectionException;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -55,6 +58,8 @@ class QueryServiceImplTest {
     private QueryConcurrencyGuard concurrencyGuard;
     private DbSourceCircuitBreaker circuitBreaker;
     private QueryServiceImpl service;
+    private SqlPlatformMetrics metrics;
+    private SimpleMeterRegistry registry;
 
     @BeforeEach
     void setUp() {
@@ -68,9 +73,10 @@ class QueryServiceImplTest {
         circuitBreaker = new DbSourceCircuitBreaker(3, 60_000,
                 new SqlPlatformMetrics(new SimpleMeterRegistry()));
 
+        registry = new SimpleMeterRegistry();
+        metrics = new SqlPlatformMetrics(registry);
         service = new QueryServiceImpl(dbSourceService, queryHistoryService, connectionManager,
-                new SqlPlatformMetrics(new SimpleMeterRegistry()), sqlPermissionService,
-                concurrencyGuard, circuitBreaker);
+                metrics, sqlPermissionService, concurrencyGuard, circuitBreaker);
 
         DbSource dbSource = new DbSource();
         dbSource.setId(DATA_SOURCE_ID);
@@ -122,6 +128,40 @@ class QueryServiceImplTest {
 
         assertFalse(circuitBreaker.allowRequest(DATA_SOURCE_ID),
                 "连续 3 次连接类失败之后必须熔断，否则「不让一个坏掉的库拖垮平台」就是空话");
+    }
+
+    @Test
+    @DisplayName("⭐ 查询历史写不进去，绝不能把一次成功的执行报成「系统异常」")
+    void historySaveFailureMustNotChangeTheOutcome() throws Exception {
+        // 业务库是好的：一行一列
+        java.sql.ResultSetMetaData metaData = Mockito.mock(java.sql.ResultSetMetaData.class);
+        Mockito.when(metaData.getColumnCount()).thenReturn(1);
+        Mockito.when(metaData.getColumnLabel(1)).thenReturn("v");
+        java.sql.ResultSet resultSet = Mockito.mock(java.sql.ResultSet.class);
+        Mockito.when(resultSet.getMetaData()).thenReturn(metaData);
+        Mockito.when(resultSet.next()).thenReturn(true, false);
+        Mockito.when(resultSet.getObject(1)).thenReturn(1);
+        java.sql.Statement statement = Mockito.mock(java.sql.Statement.class);
+        Mockito.when(statement.executeQuery(ArgumentMatchers.anyString())).thenReturn(resultSet);
+        java.sql.Connection connection = Mockito.mock(java.sql.Connection.class);
+        Mockito.when(connection.createStatement()).thenReturn(statement);
+        Mockito.when(connectionManager.getConnection(ArgumentMatchers.any())).thenReturn(connection);
+
+        // 而平台库（写历史）挂了
+        Mockito.doThrow(new RuntimeException("平台库不可用"))
+                .when(queryHistoryService).saveHistory(ArgumentMatchers.any(), ArgumentMatchers.any(),
+                        ArgumentMatchers.anyString(), ArgumentMatchers.anyString(),
+                        ArgumentMatchers.anyLong(), ArgumentMatchers.any());
+
+        // ⭐ 必须正常返回：那条 SQL **已经真的执行了**，
+        //    把它报成失败会让用户重试 —— 而写语句重试就是**重复改一次数据**。
+        QueryVO vo = service.execute(USER_ID, dto());
+
+        assertNotNull(vo, "历史写失败不该影响这次执行的结论");
+        assertNotNull(vo.getColumns());
+        // 但也不能静默：失败要有计数器（这个类用的是真实 metrics，所以断言计数值）
+        assertEquals(1.0, registry.get(SqlPlatformMetrics.HISTORY_SAVE_FAILED).counter().count(),
+                "历史写失败必须留下一个可告警的计数器");
     }
 
     @Test

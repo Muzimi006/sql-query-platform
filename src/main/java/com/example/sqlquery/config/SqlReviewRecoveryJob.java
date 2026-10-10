@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.sqlquery.common.ReviewStatus;
 import com.example.sqlquery.entity.SqlReviewRequest;
 import com.example.sqlquery.mapper.SqlReviewRequestMapper;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
@@ -114,11 +115,14 @@ public class SqlReviewRecoveryJob {
 
     private final SqlReviewRequestMapper reviewMapper;
     private final RabbitTemplate rabbitTemplate;
+    private final SqlPlatformMetrics metrics;
 
     public SqlReviewRecoveryJob(SqlReviewRequestMapper reviewMapper,
-                                RabbitTemplate rabbitTemplate) {
+                                RabbitTemplate rabbitTemplate,
+                                SqlPlatformMetrics metrics) {
         this.reviewMapper = reviewMapper;
         this.rabbitTemplate = rabbitTemplate;
+        this.metrics = metrics;
     }
 
     /** 默认每 5 分钟扫一次。 */
@@ -204,6 +208,8 @@ public class SqlReviewRecoveryJob {
                 .eq(SqlReviewRequest::getStatus, ReviewStatus.APPROVED)
                 .set(SqlReviewRequest::getUpdatedAt, LocalDateTime.now()));
 
+        // ⭐ 计数器："一批工单被反复重投"在指标上要看得见（以前只有 WARN 日志）
+        metrics.recordRecoveryFailed(SqlPlatformMetrics.LINK_REVIEW);
         log.warn("工单批准后 {} 分钟仍未被执行，补偿任务重新投递。reviewId={}",
                 stuckApprovedMinutes, request.getId());
     }
@@ -229,6 +235,9 @@ public class SqlReviewRecoveryJob {
                     .set(SqlReviewRequest::getUpdatedAt, LocalDateTime.now()));
 
             if (affected == 1) {
+                // ⭐ 这一条尤其要计数：它意味着"一条写语句被补偿判失败、结果未知"，
+                //    批量发生时只靠日志是看不见规模的。
+                metrics.recordRecoveryFailed(SqlPlatformMetrics.LINK_REVIEW);
                 log.error("工单长时间停留在 EXECUTING，已标记为失败，需人工核对数据。reviewId={}, 阈值={}分钟",
                         request.getId(), stuckExecutingMinutes);
             } else {

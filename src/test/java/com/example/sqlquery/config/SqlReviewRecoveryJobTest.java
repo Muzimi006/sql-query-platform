@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.sqlquery.common.ReviewStatus;
 import com.example.sqlquery.entity.SqlReviewRequest;
 import com.example.sqlquery.mapper.SqlReviewRequestMapper;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -56,7 +57,8 @@ class SqlReviewRecoveryJobTest {
 
         reviewMapper = Mockito.mock(SqlReviewRequestMapper.class);
         rabbitTemplate = Mockito.mock(RabbitTemplate.class);
-        job = new SqlReviewRecoveryJob(reviewMapper, rabbitTemplate);
+        job = new SqlReviewRecoveryJob(reviewMapper, rabbitTemplate,
+                Mockito.mock(SqlPlatformMetrics.class));
 
         ReflectionTestUtils.setField(job, "stuckApprovedMinutes", 10);
         ReflectionTestUtils.setField(job, "stuckApprovedMaxHours", 24);

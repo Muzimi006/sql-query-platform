@@ -289,6 +289,20 @@ class SqlReviewConsumerTest {
     }
 
     @Test
+    @DisplayName("⭐ 回写被拒（影响 0 行）时必须落一个计数器 —— 这是「数据已改但状态没写回」的唯一信号")
+    void droppedWriteBackMustBeCounted() throws Exception {
+        Mockito.when(reviewMapper.selectById(1L))
+                .thenReturn(ticket("update t_user set nickname = 'x' where id = 1"));
+        // 认领成功、执行成功，但回写时状态已经不是 EXECUTING（补偿任务抢先了）
+        Mockito.when(reviewMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.any())).thenReturn(0);
+
+        consumer.execute(1L);
+
+        // 以前只有一条 ERROR 日志 —— 没人知道"有几条结果被丢弃了"
+        Mockito.verify(metrics).recordResultDropped(SqlPlatformMetrics.LINK_REVIEW);
+    }
+
+    @Test
     @DisplayName("SQL 执行报错：落 FAILED + 原因，不外抛（重投一万次也还是失败）")
     void sqlFailureShouldBeRecordedNotThrown() throws Exception {
         Mockito.when(reviewMapper.selectById(1L))

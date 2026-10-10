@@ -16,6 +16,7 @@ import com.example.sqlquery.util.DbSourceCircuitBreaker;
 import com.example.sqlquery.util.QueryConcurrencyGuard;
 import com.example.sqlquery.util.SqlValidateUtil;
 import com.example.sqlquery.vo.QueryVO;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.sql.Connection;
@@ -29,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+@Slf4j
 @Service
 public class QueryServiceImpl implements QueryService {
 
@@ -107,6 +109,32 @@ public class QueryServiceImpl implements QueryService {
         }
     }
 
+    /**
+     * 写查询历史 —— <b>失败了也绝不影响这次执行的结论</b>。
+     *
+     * <h2>为什么必须包起来</h2>
+     *
+     * <p>审计发现：`saveHistory` 抛的是 `DataAccessException`（RuntimeException），
+     * 而外层的 catch 只包 `SQLException` —— 于是平台库一抖，异常就穿到全局兜底，
+     * 用户看到的是「系统异常」。**可那条 SQL 已经真的执行了**（管理员还能在查询页跑写语句），
+     * 用户以为失败就会重试 → **重复改一次数据**。
+     *
+     * <p>历史记录是**附属品**，它没写进去不该改变"这条语句执行成功了"这个事实。
+     * 失败本身要留痕：计数器 + WARN 日志（不静默）。
+     */
+    private void saveHistoryQuietly(Long userId, Long dataSourceId, String sql,
+                                    String status, long cost, String error) {
+        try {
+            queryHistoryService.saveHistory(userId, dataSourceId, sql, status, cost, error);
+        } catch (Exception e) {
+            // 注意级别：这是**可预期的降级**（平台库抖一下就会走到这里），用 WARN 不用 ERROR，
+            // 而且要能告警 —— 见 SqlPlatformMetrics.HISTORY_SAVE_FAILED
+            metrics.recordHistorySaveFailed();
+            log.warn("查询历史写入失败（**本次执行结果不受影响**）。dataSourceId={}, status={}",
+                    dataSourceId, status, e);
+        }
+    }
+
     private QueryVO doExecuteWithGuard(Long userId, QueryDTO dto) {
         // 走「缓存 + 分布式锁 + 启用状态校验」入口：数据源元数据是查询热路径上读得最多的数据，
         // 直接调 MyBatis-Plus 的 getById 会绕过 Redis 缓存，让缓存形同虚设
@@ -131,7 +159,7 @@ public class QueryServiceImpl implements QueryService {
                 metrics.recordQueryTruncated();
             }
 
-            queryHistoryService.saveHistory(userId, dbSource.getId(), dto.getSql(), "SUCCESS", cost, null);
+            saveHistoryQuietly(userId, dbSource.getId(), dto.getSql(), "SUCCESS", cost, null);
 
             vo.setCostMs(cost);
             return vo;
@@ -140,7 +168,7 @@ public class QueryServiceImpl implements QueryService {
 
             metrics.recordQueryFailure(cost);
 
-            queryHistoryService.saveHistory(userId, dbSource.getId(), dto.getSql(), "FAILED", cost, e.getMessage());
+            saveHistoryQuietly(userId, dbSource.getId(), dto.getSql(), "FAILED", cost, e.getMessage());
 
             // ⚠️ 必须把 cause 带上：熔断器是靠"沿 cause 链找连接类异常"判断的，
             //    以前这里只传 message，于是熔断器拿到的异常链是断的 ——

@@ -264,6 +264,9 @@ public class SqlReviewConsumer {
                 .set(SqlReviewRequest::getUpdatedAt, LocalDateTime.now()));
 
         if (affected == 0) {
+            // ⭐ 这是「数据已经改了，但状态没写回去」**唯一**的信号 ——
+            //    只打日志的话，没人知道有几条结果被丢弃了（见 RESULT_WRITEBACK_DROPPED）。
+            metrics.recordResultDropped(SqlPlatformMetrics.LINK_REVIEW);
             log.error("工单已不再处于 EXECUTING，本次执行结果未落库，需人工核对。"
                     + "reviewId={}, 本次结果={}", reviewId, status);
         }

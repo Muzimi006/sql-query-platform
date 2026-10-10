@@ -292,6 +292,68 @@ public class SqlPlatformMetrics {
         registry.counter(UNDO_PERSIST_FAILED).increment();
     }
 
+    /**
+     * ⭐ **执行结果写回被拒**的次数（条件更新影响 0 行），按链路分标签。
+     *
+     * <p>这是"**数据已经改了，但状态没写回去**"<b>唯一</b>的信号。
+     * 触发它的正常情况是补偿任务抢先（竞态），不正常的情况是阈值/重试窗口错配 ——
+     * 但两种情况在日志里长得一模一样，只有计数器能告诉你"有几条结果被丢弃了"。
+     */
+    public static final String RESULT_WRITEBACK_DROPPED = "result.writeback.dropped";
+
+    public void recordResultDropped(String link) {
+        registry.counter(RESULT_WRITEBACK_DROPPED, TAG_LINK, link).increment();
+    }
+
+    /**
+     * 查询历史写入失败次数。
+     *
+     * <p>这条路径**不能影响应答**（语句可能已经生效了），
+     * 所以失败必须靠这个计数器被发现，而不是靠用户看到报错。
+     */
+    public static final String HISTORY_SAVE_FAILED = "query.history.save.failed";
+
+    public void recordHistorySaveFailed() {
+        registry.counter(HISTORY_SAVE_FAILED).increment();
+    }
+
+    /**
+     * 审计日志写入失败次数。
+     *
+     * <p>审计写入失败会造出一个**无声的安全审计缺口**（业务照样成功、审计记录没了），
+     * 而它以前只有一条 ERROR 日志。
+     */
+    public static final String AUDIT_WRITE_FAILED = "audit.write.failed";
+
+    public void recordAuditWriteFailed() {
+        registry.counter(AUDIT_WRITE_FAILED).increment();
+    }
+
+    /**
+     * 消息被 Broker **退回**（路由不到任何队列）的次数。
+     *
+     * <p>⚠️ 它和 {@link #PUBLISH_FAILED} 是两回事：
+     * 那个记的是"调用同步抛异常"，这个记的是"调用成功了、但消息没路由到任何队列"。
+     * 两个都要有，否则"消息根本没进 Broker"这件事只活在日志里。
+     */
+    public static final String MESSAGE_RETURNED = "mq.message.returned";
+
+    public void recordReturnedMessage() {
+        registry.counter(MESSAGE_RETURNED).increment();
+    }
+
+    /**
+     * 补偿任务处置失败的次数，按链路分标签。
+     *
+     * <p>"一批导出被补偿判失败""工单被放弃重投"以前只有 WARN 日志，
+     * 批量发生时（事故后）根本没人能立刻知道规模。
+     */
+    public static final String RECOVERY_FAILED = "recovery.failed";
+
+    public void recordRecoveryFailed(String link) {
+        registry.counter(RECOVERY_FAILED, TAG_LINK, link).increment();
+    }
+
     /** 熔断器直接拒绝了这次请求（没有去尝试连接）。 */
     public void recordCircuitRejected() {
         registry.counter(CIRCUIT_REJECTED).increment();
