@@ -2,6 +2,7 @@ package com.example.sqlquery.config;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.example.sqlquery.common.ExportStatus;
 import com.example.sqlquery.entity.DbSource;
@@ -19,6 +20,7 @@ import org.mockito.Mockito;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -113,13 +115,26 @@ class ExportConsumerIdempotencyTest {
 
         consumer.execute(1L);
 
-        ArgumentCaptor<ExportTask> captor = ArgumentCaptor.forClass(ExportTask.class);
-        Mockito.verify(exportTaskMapper).updateById(captor.capture());
-        ExportTask saved = captor.getValue();
-        assertEquals(ExportStatus.SUCCESS, saved.getStatus());
-        assertEquals(3L, saved.getRowCount());
-        assertTrue(saved.getFilePath().endsWith("1.csv"));
-        assertTrue(saved.getFinishedAt() != null, "完成时间必须落库");
+        LambdaUpdateWrapper<ExportTask> wrapper = captureFinishUpdate();
+        Map<String, Object> params = wrapper.getParamNameValuePairs();
+
+        assertTrue(params.values().contains(ExportStatus.SUCCESS), "状态必须写回 SUCCESS，实际：" + params.values());
+        assertTrue(params.values().contains(3L), "行数必须落库，实际：" + params.values());
+        assertTrue(params.values().stream().anyMatch(v -> v instanceof String s && s.endsWith("1.csv")),
+                "文件路径必须落库，实际：" + params.values());
+        assertTrue(wrapper.getSqlSet().contains("finished_at"), "完成时间必须落库");
+
+        // ⭐ 回写必须带认领令牌：只有"仍然是我认领的 RUNNING"才允许写回
+        assertTrue(wrapper.getSqlSegment().contains("status"),
+                "回写的 WHERE 必须带认领令牌，实际：" + wrapper.getSqlSegment());
+    }
+
+    /** 抓取 finish() 发出的那次回写（条件更新）。 */
+    @SuppressWarnings("unchecked")
+    private LambdaUpdateWrapper<ExportTask> captureFinishUpdate() {
+        ArgumentCaptor<Wrapper<ExportTask>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        Mockito.verify(exportTaskMapper).update(ArgumentMatchers.isNull(), captor.capture());
+        return (LambdaUpdateWrapper<ExportTask>) captor.getValue();
     }
 
     @Test
@@ -137,11 +152,9 @@ class ExportConsumerIdempotencyTest {
 
         consumer.execute(1L);
 
-        ArgumentCaptor<ExportTask> captor = ArgumentCaptor.forClass(ExportTask.class);
-        Mockito.verify(exportTaskMapper).updateById(captor.capture());
-        ExportTask saved = captor.getValue();
-        assertEquals(ExportStatus.FAILED, saved.getStatus());
-        assertEquals("连接中断", saved.getErrorMessage());
+        Map<String, Object> params = captureFinishUpdate().getParamNameValuePairs();
+        assertTrue(params.values().contains(ExportStatus.FAILED), "实际：" + params.values());
+        assertTrue(params.values().contains("连接中断"), "实际：" + params.values());
 
         // 半成品文件必须被清掉，否则磁盘上会慢慢堆一批没人认领的垃圾
         assertFalse(new File("exports", "1.csv").exists(), "失败后不应留下半成品 CSV");
@@ -155,7 +168,7 @@ class ExportConsumerIdempotencyTest {
         Mockito.when(dbSourceService.getByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
         Mockito.doReturn(0L).when(consumer)
                 .generateCsv(ArgumentMatchers.any(), ArgumentMatchers.anyString(), ArgumentMatchers.any());
-        Mockito.when(exportTaskMapper.updateById(ArgumentMatchers.any()))
+        Mockito.when(exportTaskMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.any()))
                 .thenThrow(new RuntimeException("数据库不可用"));
 
         org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class, () -> consumer.execute(1L));
@@ -164,15 +177,15 @@ class ExportConsumerIdempotencyTest {
     @Test
     @DisplayName("落库失败时：消息 nack 且不重新入队，走死信队列")
     void persistenceFailureShouldNackIntoDeadLetterQueue() throws Exception {
+        // 第一次 update 是认领（成功），第二次是回写（失败）
         Mockito.when(exportTaskMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.any()))
-                .thenReturn(1);
+                .thenReturn(1)
+                .thenThrow(new RuntimeException("数据库不可用"));
         ExportTask task = pendingTask(1L);
         Mockito.when(exportTaskMapper.selectById(1L)).thenReturn(task);
         Mockito.when(dbSourceService.getByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
         Mockito.doReturn(0L).when(consumer)
                 .generateCsv(ArgumentMatchers.any(), ArgumentMatchers.anyString(), ArgumentMatchers.any());
-        Mockito.when(exportTaskMapper.updateById(ArgumentMatchers.any()))
-                .thenThrow(new RuntimeException("数据库不可用"));
 
         com.rabbitmq.client.Channel channel = Mockito.mock(com.rabbitmq.client.Channel.class);
         consumer.handle(1L, channel, 42L);
@@ -189,6 +202,7 @@ class ExportConsumerIdempotencyTest {
 
         consumer.execute(1L);
 
-        Mockito.verify(exportTaskMapper, Mockito.never()).updateById(ArgumentMatchers.any());
+        Mockito.verify(exportTaskMapper, Mockito.never())
+                .update(ArgumentMatchers.isNull(), ArgumentMatchers.any());
     }
 }

@@ -15,14 +15,18 @@ import com.example.sqlquery.service.ExportService;
 import com.example.sqlquery.util.SqlType;
 import com.example.sqlquery.util.SqlValidateUtil;
 import com.example.sqlquery.vo.ExportTaskVO;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 public class ExportServiceImpl implements ExportService {
 
@@ -70,8 +74,27 @@ public class ExportServiceImpl implements ExportService {
         // 带上 CorrelationData：开启 publisher confirm 后，Broker 的确认/否定
         // 是通过这个对象的 id 回调回来的。不带的话只知道"有一条消息没送到"，
         // 却不知道该把哪条任务标记成失败（见 RabbitConfirmConfig）。
-        rabbitTemplate.convertAndSend(RabbitConfig.EXPORT_QUEUE, task.getId(),
-                new CorrelationData(String.valueOf(task.getId())));
+        try {
+            rabbitTemplate.convertAndSend(RabbitConfig.EXPORT_QUEUE, task.getId(),
+                    new CorrelationData(String.valueOf(task.getId())));
+        } catch (Exception e) {
+            // ⚠️ 投递失败时必须**立刻把任务标掉**，否则会留下一条永远 PENDING 的孤儿行：
+            //    它既不会被执行，也要等 10 分钟才被补偿任务判失败，而用户当场看到的是
+            //    "系统异常"（异常冒到全局兜底处理器）。
+            //
+            // 为什么不像工单链路那样"吞掉异常、交给补偿重投"：
+            // **导出没有补偿重投** —— 重跑会覆盖同一个文件名，中途中断留下的半成品
+            // 和重跑的结果无法区分（见 ExportTaskRecoveryJob 的类注释）。
+            // 所以这里只能现在就把它标失败，并给用户一句能看懂的话。
+            log.error("导出任务创建后投递失败，已立即标记为失败。taskId={}", task.getId(), e);
+            exportTaskMapper.update(null, new LambdaUpdateWrapper<ExportTask>()
+                    .eq(ExportTask::getId, task.getId())
+                    .eq(ExportTask::getStatus, ExportStatus.PENDING)
+                    .set(ExportTask::getStatus, ExportStatus.FAILED)
+                    .set(ExportTask::getErrorMessage, "任务未能投递到消息队列，请稍后重新发起导出")
+                    .set(ExportTask::getFinishedAt, LocalDateTime.now()));
+            throw new BusinessException("导出任务创建失败，请稍后重试");
+        }
 
         return toVO(task);
     }

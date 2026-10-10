@@ -22,12 +22,19 @@ import org.springframework.context.annotation.Configuration;
  *   <li>{@code spring.rabbitmq.template.mandatory=true}
  *       —— 消息路由不到任何队列时，让 Broker 把它退回（return）而不是静默丢弃；</li>
  *   <li><b>本类</b> —— 上面两个开关只是让 Broker"愿意告诉你"，
- *       真正接收确认、记录日志、触发补偿的是这两个回调。
+ *       真正接收确认、并把结果<b>记进日志</b>的是这两个回调。
  *       只配开关不写回调，是"看起来配了、实际什么也没发生"。</li>
  * </ol>
  *
  * <p>当前对<b>否定确认</b>的处理是"打 ERROR 日志 + 留给人处理"，
- * 没有自动改任务状态。原因：确认回调运行在独立的线程里，
+ * <b>回调本身一个字都不写库</b>（它只打日志）。
+ * 真正兜底的是两个独立的定时任务：{@link ExportTaskRecoveryJob} 与
+ * {@link SqlReviewRecoveryJob}。
+ *
+ * <p>⚠️ 这句话以前写成"回调触发补偿"，是错的 —— 会让人以为补偿依赖回调，
+ * 从而在排查时去找"回调有没有跑"。补偿完全是定时任务自己扫出来的，与回调无关。
+ *
+ * <p>没有自动改任务状态的原因：确认回调运行在独立的线程里，
  * 在这里改数据库要有重试与幂等，而任务本身已经有补偿任务兜底
  * （{@link ExportTaskRecoveryJob} 会把超时未完成的判为失败）。
  * 这一步的边界是有意画在这里的，不是漏了。

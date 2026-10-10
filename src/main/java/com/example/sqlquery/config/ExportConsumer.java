@@ -181,10 +181,7 @@ public class ExportConsumer {
 
             long rowCount = generateCsv(dbSource, task.getSqlText(), file);
 
-            task.setStatus(ExportStatus.SUCCESS);
-            task.setFilePath(file.getPath());
-            task.setRowCount(rowCount);
-            task.setFinishedAt(LocalDateTime.now());
+            finish(taskId, ExportStatus.SUCCESS, file.getPath(), rowCount, null);
         } catch (Exception e) {
             log.error("导出任务执行失败。taskId={}", taskId, e);
 
@@ -194,14 +191,56 @@ public class ExportConsumer {
                 log.warn("导出失败后清理半成品文件失败，需要人工处理。path={}", file.getAbsolutePath());
             }
 
-            task.setStatus(ExportStatus.FAILED);
-            // 只取消息不取堆栈：error_message 是要展示给用户看的字段，
-            // 堆栈在日志里已经有了
-            task.setErrorMessage(e.getMessage());
-            task.setFinishedAt(LocalDateTime.now());
+            // 只取消息不取堆栈：error_message 是要展示给用户看的字段，堆栈在日志里已经有了
+            finish(taskId, ExportStatus.FAILED, null, null, e.getMessage());
         }
+    }
 
-        exportTaskMapper.updateById(task);
+    /**
+     * 把执行结果写回任务。**必须是条件更新**，不能是 {@code updateById}。
+     *
+     * <h2>为什么</h2>
+     *
+     * <p>认领用的是条件更新（{@code PENDING → RUNNING}），但最早的回写是
+     * {@code updateById} —— 按主键<b>整行覆盖</b>，{@code WHERE} 里没有那个认领令牌。
+     * 于是出现一条很隐蔽的竞态：
+     *
+     * <ol>
+     *   <li>消费者认领了任务，正在跑那条慢查询；</li>
+     *   <li>{@link ExportTaskRecoveryJob} 认为它卡死了（阈值配置不当、或者队列积压导致
+     *       排队时间也算进了 {@code created_at} 判定），把它标成 FAILED
+     *       并写下"已由补偿任务标记为失败"；</li>
+     *   <li>消费者跑完，{@code updateById} 把状态盖回 SUCCESS ——
+     *       <b>而那句失败原因还留在 {@code error_message} 里</b>
+     *       （MyBatis-Plus 默认的 NOT_NULL 策略下，把字段设成 null 根本不会进 SET 子句）。</li>
+     * </ol>
+     *
+     * <p>最终用户看到"导出成功"，点进去却有一句"已标记为失败"。
+     *
+     * <p>工单链路后来也是同样的写法、同样的 bug，在那边被对抗式评审抓出来了
+     * （见落地方案文档 §3.3.8）。这里是同一处修复。
+     *
+     * <p>⚠️ 用 {@code .set(...)} 显式写列，这样 {@code null} 也会进 SET 子句 ——
+     * 成功时要清掉上次留下的错误信息，靠的正是这个。
+     */
+    private void finish(Long taskId, String status, String filePath, Long rowCount, String errorMessage) {
+        int affected = exportTaskMapper.update(null, new LambdaUpdateWrapper<ExportTask>()
+                .eq(ExportTask::getId, taskId)
+                // 认领令牌：只有"仍然是我认领的那条 RUNNING"才允许写回
+                .eq(ExportTask::getStatus, ExportStatus.RUNNING)
+                .set(ExportTask::getStatus, status)
+                .set(ExportTask::getFilePath, filePath)
+                .set(ExportTask::getRowCount, rowCount)
+                .set(ExportTask::getErrorMessage, errorMessage)
+                .set(ExportTask::getFinishedAt, LocalDateTime.now()));
+        // 注：ExportTask 实体没有 updatedAt 字段（表里有，但实体没映射），
+        // 而导出的卡死判定用的是 created_at，所以这里不需要显式写时间戳 ——
+        // 和工单链路（那个必须显式写，因为判定用的是 updated_at）不同。
+
+        if (affected == 0) {
+            log.error("导出任务已不再处于 RUNNING，本次结果未落库，需人工核对。"
+                    + "taskId={}, 本次结果={}", taskId, status);
+        }
     }
 
     /**
