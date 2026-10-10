@@ -450,6 +450,18 @@ CSV 导出编码、导出文件清理、数据源入口与状态校验、并发�
 
 ## 主要接口
 
+> 📖 **完整的字段级契约不用看这张表** —— 应用起来之后打开
+> **http://localhost:8080/swagger-ui.html**（原始 JSON 在 `/v3/api-docs`）。
+> 它是从代码自动生成的，所以**不会和实现漂移**；这张表只是给不方便起服务的人看的速查。
+>
+> ⚠️ **安全边界**：`JwtInterceptor` 只覆盖 `/api/**`，而接口文档的两个路径不在这个范围里 ——
+> 也就是说它是**公开可访问**的。泄漏的是"接口的面貌"（路径、参数名、DTO 字段），
+> **不是数据**（业务接口仍然要 JWT）。生产环境请用
+> `SPRINGDOC_ENABLED=false` 关掉，理由见 application.yml 里的注释。
+>
+> ⚠️ 另一个坑：**springdoc 版本必须跟 Spring Boot 的大版本走**（2.x → Boot 3，**3.x → Boot 4**）。
+> 装错不会编译失败，会在启动阶段以"Bean 创建失败"的形式崩掉。
+
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/auth/register` | 注册 |
@@ -464,7 +476,11 @@ CSV 导出编码、导出文件清理、数据源入口与状态校验、并发�
 | POST | `/api/query/execute` | 执行 SQL |
 | GET | `/api/history` | 查询历史 |
 | GET | `/api/history/page` | 历史分页 / 筛选 |
+| DELETE | `/api/history/{id}` | 删除一条查询历史 |
+| DELETE | `/api/history` | 清空查询历史 |
 | POST | `/api/favorite` | 收藏 SQL |
+| GET | `/api/favorite` | 收藏列表 |
+| DELETE | `/api/favorite/{id}` | 删除收藏 |
 | POST | `/api/export` | 创建导出任务 |
 | GET | `/api/export` | 导出任务列表 |
 | GET | `/api/export/{id}/download` | 下载导出文件 |
