@@ -361,6 +361,7 @@ src/main/java/com/example/sqlquery
 ├── mapper       // 数据访问层
 ├── metrics      // 指标定义（集中一处 —— 指标名是对外契约）
 ├── service      // 业务层
+├── tx           // 请求级平台库写缓冲（合并写：审计 + 历史一个事务提交）
 ├── util         // JWT、AES、JDBC URL、连接池、限流、SQL 校验
 └── vo           // 返回对象
 ```
@@ -467,8 +468,8 @@ exec 形式的 `ENTRYPOINT`（`SIGTERM` 直达 JVM，优雅停机才生效）。
 > 只写 `-Dgroups=integration` 的话，一条集成用例都不会跑，却会显示 BUILD SUCCESS。
 > 现在排除项已改成属性（`surefire.excludedGroups`），所以清空它就能放行。
 
-当前共 **403 个用例**：纯单元层 **364 个**（`mvn test`，不依赖任何中间件），
-另外 **37 个**打了 `integration` 标签、默认不跑。集成用例覆盖：
+当前共 **409 个用例**：纯单元层 **368 个**（`mvn test`，不依赖任何中间件），
+另外 **41 个**打了 `integration` 标签、默认不跑。集成用例覆盖：
 MyBatis-Plus 装配与分页、导出的幂等与卡单补偿、**真实 PostgreSQL 下的双方言行为**、
 写语句执行与角色权限、**审核工单的端到端链路**（提交 → 审批 → MQ → 执行 → 留痕）。
 
