@@ -81,6 +81,38 @@ platform:
   # 只要没人先注册那个名字，任何人都能注册它并直接拿到管理员权限。
   admin-register-code: ${ADMIN_REGISTER_CODE:}
 
+  # 自然语言生成 SQL（NL2SQL）
+  #
+  # ⚠️ 默认关闭，而且必须由部署方显式打开。两个理由：
+  #   1. 没配密钥就不该导致整个平台起不来 ——"接大模型"不能是硬依赖；
+  #   2. 打开之后，**表结构会被发给模型服务**。这是一次真实的数据出境，
+  #      必须有人为此签字，而不是应用擅自决定。
+  #
+  # 关闭时的表现是：入口明确返回"功能未启用，请配置 platform.llm.xxx"，
+  # 而不是 500 或者空指针。见 DisabledLlmClient。
+  #
+  # 接口按 OpenAI 兼容协议（POST /chat/completions）调用，
+  # 所以 DeepSeek / 通义 / Kimi / 本地 Ollama / vLLM 都只改 base-url 和 model 就能用。
+  # 文旅、文物这类客户多半会要求模型私有化部署 —— 那时候要改的就是这一个 base-url。
+  llm:
+    enabled: ${LLM_ENABLED:false}
+    base-url: ${LLM_BASE_URL:https://api.deepseek.com}
+    # ⚠️ 这是一个凭据，只从环境变量注入，
+    #    不要写进配置文件、更不要提交进仓库。
+    api-key: ${LLM_API_KEY:}
+    model: ${LLM_MODEL:deepseek-chat}
+    # 调用超时（秒）。必须有：这是一次同步的外部 HTTP 调用，占着 Web 线程。
+    # 没有超时的话，上游卡住会把 Tomcat 线程池吃干，
+    # 表现成"整个平台打不开"，而根因在别人家的服务上。
+    timeout-seconds: 30
+
+    # 单用户限流。比工单提交严得多：每一次都是一次**付费的外部调用**，
+    # 而且最长会占用 30 秒的 Web 线程。不限流的话，一个人反复点
+    # 就能把配额和线程一起烧掉。
+    rate-limit:
+      max-requests: 5
+      window-seconds: 60
+
   sql-permission:
     # 角色 -> 允许执行的语句类型。
     # 不配就用代码里的默认值（见 SqlPermissionProperties）：
@@ -95,6 +127,26 @@ platform:
     # role-whitelist:
     #   USER:  [SELECT]
     #   ADMIN: [SELECT, INSERT, UPDATE, DELETE]
+
+    # 可以提交审核工单去申请执行的语句类型。
+    #
+    # ⚠️ 它**必须**和上面的 role-whitelist 分开，这是工单能不能成立的关键。
+    # 直觉上会想"提交工单也用同一个白名单"，但那样会得到一个死循环：
+    # USER 的白名单里只有 SELECT，于是 USER 连一条 UPDATE 的工单都提交不了 ——
+    # 而"让没有写权限的人能够申请写操作"正是工单系统存在的理由。
+    #
+    # 三件事的边界：
+    #   能不能申请      -> reviewable-types（这里），默认 INSERT / UPDATE / DELETE
+    #   能不能直接执行  -> role-whitelist，走 QueryServiceImpl，与工单无关
+    #   批了能不能执行  -> 由"审批人点了通过"授予，一次性、绑定到这一条 SQL 上
+    #
+    # DDL 默认不在里面，理由和 role-whitelist 一样：
+    # DROP / TRUNCATE 不是"数据订正"，是结构变更，没有"审一下就能放行"的正当场景。
+    #
+    # 放宽的只是语句类型 —— 解析、AST 危险函数检查、系统库检查、字符串兜底
+    # 这四道防线在提交和执行两处都不会少：可申请的是"写语句"，不是"危险语句"。
+    #
+    # reviewable-types: [INSERT, UPDATE, DELETE]
 
 query:
   rate-limit:
@@ -127,6 +179,60 @@ export:
   #    调大 query-timeout-seconds 时必须同步调大这个值，否则会把正常执行的导出判成卡死。
   stuck-running-minutes: 10
   recovery-cron: "0 */5 * * * ?"
+
+# SQL 审核工单（审批通过后异步执行的那条链路）
+review:
+  # 单条工单 SQL 的执行超时（秒）。
+  # 比查询链路的 30 秒宽 —— 工单本来就是给"批量订正"用的；
+  # 但必须有：它和查询共用同一个数据源连接池（上限 5），
+  # 一条挂住的 UPDATE 会把池子慢慢占满，把正常查询一起拖垮。
+  query-timeout-seconds: 120
+
+  # 批准之后多久还没被执行，就重新投递一次执行消息。
+  #
+  # 为什么可以放心重投：消费者认领时要求状态仍是 APPROVED（条件更新），
+  # 第一条消息认领成功后，后面重复的那些只会被 ack 掉，不会重复执行。
+  # 这也正是 approve() 里"投递失败不报错、交给补偿任务"这个决定能成立的前提 ——
+  # 没有这个兜底，那条被吞掉的异常就真的没人管了。
+  stuck-approved-minutes: 10
+
+  # 重投最多持续多久，超过就放弃并标记失败。
+  # 没有这个上限的话，Broker 长期不可用会让补偿任务每 5 分钟重投一次、
+  # 永远重投下去 —— 日志被刷满，却没有任何人注意到。
+  stuck-approved-max-hours: 24
+
+  # EXECUTING 停留超过这个时长就认定执行中断。
+  # ⚠️ 它必须明显大于 query-timeout-seconds：
+  #     2 分钟执行上限 + 13 分钟余量 = 15 分钟。
+  #     调大 query-timeout-seconds 时必须同步调大这个值，
+  #     否则会把仍在正常执行的工单判成失败。
+  #
+  # 卡在这一步的工单会被标记为失败，而**不会**自动重跑 ——
+  # 写语句不幂等（UPDATE ... SET n = n + 1 跑两次就是两次），
+  # 中断时"到底生效没有"无法确定。这个不确定性必须交给人，不能用一个"重试"消化掉。
+  stuck-executing-minutes: 15
+
+  recovery-cron: "0 */5 * * * ?"
+
+  # 是否允许审批自己提交的工单。默认不允许。
+  #
+  # 这条链路存在的理由就是"由另一个人看过之后决定"，而它偏偏是全平台
+  # 唯一一条执行人工写语句的路径。允许自批的话，对 ADMIN 来说工单就退化成了
+  # 一次自我确认 —— 审批这一步就白设了。
+  #
+  # 但只有一名管理员的小团队确实需要放开，所以做成配置而不是写死。
+  # 注意：驳回**不**受这个开关限制 —— 驳回自己的工单本质上就是「撤回」，
+  # 禁止它只会让人被自己卡住，一条提错了的工单再也撤不掉。
+  allow-self-approve: ${REVIEW_ALLOW_SELF_APPROVE:false}
+
+  # 提交工单的单用户限流。
+  # 比查询的 60 次/分钟更严：每提交一次，平台就会拿**业务库**的连接跑一次 EXPLAIN，
+  # 而那个连接池上限只有 5。任意登录用户无成本连点，既能把别人的查询连接池占满，
+  # 又能往工单表里灌垃圾。"谁都能申请"是对的（申请不改数据），
+  # 但"谁都能无限量申请"不是。
+  rate-limit:
+    max-requests: 20
+    window-seconds: 60
 jwt:
   
   secret: ${JWT_SECRET}
