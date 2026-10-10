@@ -23,12 +23,9 @@ import java.nio.charset.StandardCharsets;
 public class DbSourceCacheInvalidationListener implements MessageListener {
 
     private final DbSourceCacheInvalidator invalidator;
-    private final ConnectionManager connectionManager;
 
-    public DbSourceCacheInvalidationListener(DbSourceCacheInvalidator invalidator,
-                                             ConnectionManager connectionManager) {
+    public DbSourceCacheInvalidationListener(DbSourceCacheInvalidator invalidator) {
         this.invalidator = invalidator;
-        this.connectionManager = connectionManager;
     }
 
     @Override
@@ -46,13 +43,13 @@ public class DbSourceCacheInvalidationListener implements MessageListener {
         }
 
         try {
-            // 清掉本实例的连接池：这是广播存在的真正理由
-            connectionManager.evict(dataSourceId);
-            // 顺带删缓存键。别的实例已经删过一次了，但这一步是幂等的；
-            // 保留了它是因为"收到失效通知就把相关本地状态清干净"比"依赖发送方是否记得清"更稳
-            invalidator.deleteCacheQuietly(DbSourceCacheInvalidator.cacheKey(dataSourceId));
+            // ⭐ 统一走 evictLocal：它负责"本实例要清的全部东西"——
+            //    连接池 + 数据源缓存 + **表结构缓存**。
+            //    以前这里是手写两句，于是后来加的表结构缓存就漏掉了（谁也没想起来）。
+            invalidator.evictLocal(dataSourceId);
 
-            log.info("收到数据源变更广播，本实例已失效连接池与缓存。dataSourceId={}", dataSourceId);
+            log.info("收到数据源变更广播，本实例已失效连接池、数据源缓存与表结构缓存。dataSourceId={}",
+                    dataSourceId);
         } catch (Exception e) {
             // 单条消息处理失败不能影响后续消息
             log.error("处理数据源失效广播失败。dataSourceId={}", dataSourceId, e);

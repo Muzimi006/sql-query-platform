@@ -354,6 +354,33 @@ public class SqlPlatformMetrics {
         registry.counter(RECOVERY_FAILED, TAG_LINK, link).increment();
     }
 
+    /**
+     * 因**配置变化**而重建连接池的次数。
+     *
+     * <p>它持续大于 0 说明"失效广播没能送达"（或者数据源被频繁修改）——
+     * 这条路径以前是**静默的**：池子用旧凭据一直连不上，而 Redis 恢复后也不会自愈。
+     */
+    public static final String POOL_REBUILT_ON_CONFIG_CHANGE = "datasource.pool.rebuilt";
+
+    public void recordPoolRebuiltOnConfigChange() {
+        registry.counter(POOL_REBUILT_ON_CONFIG_CHANGE).increment();
+    }
+
+    /** "系统异常"（全局兜底）的次数。 */
+    public static final String SYSTEM_ERROR = "system.error";
+
+    /**
+     * 走到全局兜底的未预期异常。
+     *
+     * <p>⚠️ 为什么要计数：这个项目的错误响应**一律是 HTTP 200 + body 里的 code**，
+     * 所以"服务端炸了"在 `http_server_requests{status=...}` 上<b>看不出来</b> ——
+     * 任何按 HTTP 状态算错误率的告警（网关、APM、K8s）对本项目都是瞎的。
+     * 这个计数器是那条链路上唯一可告警的信号。
+     */
+    public void recordSystemError() {
+        registry.counter(SYSTEM_ERROR).increment();
+    }
+
     /** 熔断器直接拒绝了这次请求（没有去尝试连接）。 */
     public void recordCircuitRejected() {
         registry.counter(CIRCUIT_REJECTED).increment();

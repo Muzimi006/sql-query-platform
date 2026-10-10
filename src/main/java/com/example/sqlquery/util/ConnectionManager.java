@@ -5,6 +5,7 @@ import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.sql.Connection;
@@ -18,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * 是<b>纯 JVM 内</b>的状态 —— 多实例部署时别的实例看不见它，
  * 这正是"{@code DbSourceCacheInvalidator}} 要广播失效"的原因（见那个类的注释）。
  */
+@Slf4j
 @Component
 public class ConnectionManager {
 
@@ -37,7 +39,25 @@ public class ConnectionManager {
     private final AesUtil aesUtil;
     private final SqlPlatformMetrics metrics;
 
-    private final ConcurrentHashMap<Long, HikariDataSource> poolCache = new ConcurrentHashMap<>();
+    /**
+     * 池条目：<b>连接串指纹</b> + 池子。
+     *
+     * <p>为什么要存指纹：{@code poolCache} 是"按 id 缓存、条目存在就永远不重建"的，
+     * 而数据源**配置是可以变的**（改密码、改库、换主机）。
+     * 正常情况下"配置变了"由 Redis 广播通知所有实例失效（见 {@code DbSourceCacheInvalidator}），
+     * 但**广播会失败**（Redis 不可用时），那时：
+     * <ul>
+     *   <li>缓存键已经全局删掉了 → 本实例重新回源，能拿到<b>新的</b> DbSource；</li>
+     *   <li>可池子还是<b>旧的</b> → 继续用旧凭据连库，每个请求都失败；</li>
+     *   <li>而且 <b>Redis 恢复之后也不会好</b> —— 只有重启实例。</li>
+     * </ul>
+     *
+     * <p>指纹就是给这条路径兜底的：**配置变了就作废重建**，不依赖广播是否送达。
+     */
+    private record PoolEntry(String fingerprint, HikariDataSource dataSource) {
+    }
+
+    private final ConcurrentHashMap<Long, PoolEntry> poolCache = new ConcurrentHashMap<>();
 
     public ConnectionManager(AesUtil aesUtil, SqlPlatformMetrics metrics) {
         this.aesUtil = aesUtil;
@@ -45,8 +65,36 @@ public class ConnectionManager {
     }
 
     public Connection getConnection(DbSource dbSource) throws SQLException {
-        HikariDataSource dataSource = poolCache.computeIfAbsent(dbSource.getId(), id -> createDataSource(dbSource));
-        return dataSource.getConnection();
+        String fingerprint = fingerprintOf(dbSource);
+
+        PoolEntry cached = poolCache.get(dbSource.getId());
+        if (cached != null && !cached.fingerprint().equals(fingerprint)) {
+            // ⭐ 配置变了 → 老池子作废。这是**广播丢失时唯一能兜住的地方**：
+            //    没有它，本实例会一直用旧密码连库，恢复 Redis 也不会自愈。
+            log.warn("数据源配置已变化，作废旧连接池并重建。dataSourceId={}", dbSource.getId());
+            metrics.recordPoolRebuiltOnConfigChange();
+            evict(dbSource.getId());
+        }
+
+        PoolEntry entry = poolCache.computeIfAbsent(dbSource.getId(),
+                id -> new PoolEntry(fingerprint, createDataSource(dbSource)));
+        return entry.dataSource().getConnection();
+    }
+
+    /**
+     * 连接串指纹：配置里每一个"会影响能不能连上"的字段都要进来。
+     *
+     * <p>密码用的是**密文**（{@code passwordEncrypted}）—— 够用且不用解密：
+     * 改密码必然导致密文变化；而且解密是有成本的，不该在每个查询上做。
+     */
+    static String fingerprintOf(DbSource dbSource) {
+        return String.join("|",
+                String.valueOf(dbSource.getType()),
+                String.valueOf(dbSource.getHost()),
+                String.valueOf(dbSource.getPort()),
+                String.valueOf(dbSource.getDatabaseName()),
+                String.valueOf(dbSource.getUsername()),
+                String.valueOf(dbSource.getPasswordEncrypted()));
     }
 
     /**
@@ -57,11 +105,11 @@ public class ConnectionManager {
      * Gauge 读到的是一个正在关闭的池子，可能抛出异常或读到瞬时归零的值。
      */
     public void evict(Long id) {
-        HikariDataSource dataSource = poolCache.remove(id);
+        PoolEntry entry = poolCache.remove(id);
         metrics.removePoolGauges(id);
 
-        if (dataSource != null) {
-            dataSource.close();
+        if (entry != null) {
+            entry.dataSource().close();
         }
     }
 

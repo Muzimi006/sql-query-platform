@@ -11,6 +11,7 @@ import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
@@ -36,6 +37,12 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    private final SqlPlatformMetrics metrics;
+
+    public GlobalExceptionHandler(SqlPlatformMetrics metrics) {
+        this.metrics = metrics;
+    }
 
     @ExceptionHandler(BusinessException.class)
     public Result<Void> handleBusinessException(BusinessException e) {
@@ -163,6 +170,10 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     public Result<Void> handleException(Exception e) {
+        // ⭐ 必须计数：这个项目的错误响应**一律是 HTTP 200 + body 里的 code**，
+        //    所以"服务端炸了"在 http_server_requests{status=...} 上**看不出来** ——
+        //    按 HTTP 状态算错误率的告警（网关 / APM / K8s）对这个项目是瞎的。
+        metrics.recordSystemError();
         log.error("系统异常", e);
         return Result.error("系统异常");
     }

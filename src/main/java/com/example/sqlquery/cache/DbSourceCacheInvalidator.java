@@ -1,6 +1,7 @@
 package com.example.sqlquery.cache;
 
 import com.example.sqlquery.metrics.SqlPlatformMetrics;
+import com.example.sqlquery.service.SchemaIntrospector;
 import com.example.sqlquery.util.ConnectionManager;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -51,12 +52,16 @@ public class DbSourceCacheInvalidator {
     private final ConnectionManager connectionManager;
     private final SqlPlatformMetrics metrics;
 
+    private final SchemaIntrospector schemaIntrospector;
+
     public DbSourceCacheInvalidator(StringRedisTemplate redisTemplate,
                                     ConnectionManager connectionManager,
-                                    SqlPlatformMetrics metrics) {
+                                    SqlPlatformMetrics metrics,
+                                    SchemaIntrospector schemaIntrospector) {
         this.redisTemplate = redisTemplate;
         this.connectionManager = connectionManager;
         this.metrics = metrics;
+        this.schemaIntrospector = schemaIntrospector;
     }
 
     /** 缓存 key 的<b>唯一</b>构造入口：读、写、删、广播接收端都必须走这里。 */
@@ -68,6 +73,11 @@ public class DbSourceCacheInvalidator {
     public void evictLocal(Long id) {
         deleteCacheQuietly(cacheKey(id));
         connectionManager.evict(id);
+        // ⭐ 表结构缓存也要一起失效。
+        //    它以前**从来没有人调用过**（`SchemaIntrospector.evict` 是死代码），
+        //    于是改了数据源指向的库/表结构之后，本实例最多 5 分钟仍按**旧表结构**拼提示词 ——
+        //    而多实例下"只有收到广播的这个实例会清"，正好对齐。
+        schemaIntrospector.evict(id);
     }
 
     /**

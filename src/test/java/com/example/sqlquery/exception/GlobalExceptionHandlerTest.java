@@ -3,8 +3,11 @@ package com.example.sqlquery.exception;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.MediaType;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -37,11 +40,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class GlobalExceptionHandlerTest {
 
     private MockMvc mockMvc;
+    /** 真实 metrics（SimpleMeterRegistry）—— 要断言"系统异常被计数了"。 */
+    private SimpleMeterRegistry registry;
 
     @BeforeEach
     void setUp() {
+        registry = new SimpleMeterRegistry();
         mockMvc = MockMvcBuilders.standaloneSetup(new ProbeController())
-                .setControllerAdvice(new GlobalExceptionHandler())
+                .setControllerAdvice(new GlobalExceptionHandler(new SqlPlatformMetrics(registry)))
                 .build();
     }
 
@@ -104,11 +110,17 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
-    @DisplayName("真正没预料到的异常才允许报系统异常")
+    @DisplayName("真正没预料到的异常才允许报系统异常，⭐ 而且必须被计数")
     void unexpectedExceptionShouldStillBeGeneric() throws Exception {
         mockMvc.perform(get("/probe/boom"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.message").value("系统异常"));
+
+        // ⭐ 这个项目的错误响应一律是 HTTP 200 + body 里的 code，
+        //    所以"服务端炸了"在 http_server_requests{status=...} 上**看不出来** ——
+        //    按 HTTP 状态算错误率的告警对本项目是瞎的，计数器是那条链路上唯一的信号。
+        assertEquals(1.0, registry.get(SqlPlatformMetrics.SYSTEM_ERROR).counter().count(),
+                "系统异常必须留下可告警的计数器");
     }
 
     @Test
