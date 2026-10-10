@@ -1,11 +1,33 @@
 spring:
   application:
     name: sql-query-platform
+  # 优雅停机：默认是 immediate —— SIGTERM 一来就**直接切断在途请求**
+  # （进行中的 CSV 下载、正在跑的查询、最长 30 秒的 NL2SQL 调用全都会断在半路）。
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+  # ⚠️ 所有 @Scheduled 默认**共用 1 个线程**：任何一个卡住（等数据库、等 Broker）
+  #    都会把补偿任务一起推迟 —— 而那两个补偿任务正是用来兜住"任务卡死"的。
+  #    这里显式给 4 个线程，让它们互不拖累。
+  task:
+    scheduling:
+      pool:
+        size: 4
   datasource:
-    url: jdbc:mysql://localhost:3306/sql_query_platform?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    # ⚠️ connectTimeout / socketTimeout 都不能省：
+    #    MySQL 驱动的默认值是 **0 = 永不超时**，而 Hikari 的 connection-timeout 只管"借连接"，
+    #    管不了"借到之后语句卡住"。数据库 TCP 可达但不再响应时（磁盘满 / 机器假死 / 网络黑洞），
+    #    execute() 会**永久阻塞**，把 Tomcat 线程一个个占死 —— 现象是"整个平台打不开"，
+    #    而且 setQueryTimeout 也救不了（连接已经死了，KILL QUERY 发不出去）。
+    url: jdbc:mysql://localhost:3306/sql_query_platform?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=5000&socketTimeout=60000
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
     driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      # 显式写出来（原来全靠 Boot 默认值）：压测已经证明这个上限是 570 QPS 那个平台值的一部分，
+      # 靠默认值意味着"这个数字从没被决定过"。
+      maximum-pool-size: 10
+      connection-timeout: 30000
+      validation-timeout: 5000
   rabbitmq:
     host: ${RABBITMQ_HOST:localhost}
     port: ${RABBITMQ_PORT:5672}
@@ -33,6 +55,13 @@ spring:
       port: ${REDIS_PORT:6379}
       connect-timeout: 1s
       timeout: 400ms
+# 优雅停机。
+# ⚠️ 默认是 immediate：SIGTERM 一来 Tomcat 就**直接切断在途请求** ——
+#    进行中的 CSV 下载、正在跑的查询、最长 30 秒的 NL2SQL 调用会断在半路。
+#    graceful 之后，容器停止时会先等这些请求跑完（上限见 spring.lifecycle.timeout-per-shutdown-phase）。
+server:
+  shutdown: graceful
+
 # 接口文档（OpenAPI 3 + Swagger UI）
 # 打开：http://localhost:8080/swagger-ui.html   ← 会跳到 /swagger-ui/index.html
 # 原始 JSON：http://localhost:8080/v3/api-docs

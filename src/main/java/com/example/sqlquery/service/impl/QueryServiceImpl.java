@@ -142,7 +142,10 @@ public class QueryServiceImpl implements QueryService {
 
             queryHistoryService.saveHistory(userId, dbSource.getId(), dto.getSql(), "FAILED", cost, e.getMessage());
 
-            throw new BusinessException("SQL执行失败：" + e.getMessage());
+            // ⚠️ 必须把 cause 带上：熔断器是靠"沿 cause 链找连接类异常"判断的，
+            //    以前这里只传 message，于是熔断器拿到的异常链是断的 ——
+            //    判定恒为"不是基础设施失败"，**熔断永远不会打开**。
+            throw new BusinessException("SQL执行失败：" + e.getMessage(), e);
         }
     }
 

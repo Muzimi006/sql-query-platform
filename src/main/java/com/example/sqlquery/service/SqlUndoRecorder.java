@@ -141,6 +141,17 @@ public class SqlUndoRecorder {
         public static UndoCapture skipped(String reason) {
             return new UndoCapture(UndoStatus.SKIPPED, reason, null, null, null, null, null);
         }
+
+        /**
+         * 取像失败（本次已回滚、未执行任何语句）。
+         *
+         * <p>⚠️ 这个工厂是补上的：在这之前 {@link UndoStatus#FAILED} **从来没有任何地方写入过**
+         * —— 三态在数据里实际只有两态。后果是：任何按 {@code capture_status='FAILED'}
+         * 写的巡检/告警**静默地永远不会触发**，而文档与表注释都描述了这个状态。
+         */
+        public static UndoCapture failed(String reason) {
+            return new UndoCapture(UndoStatus.FAILED, reason, null, null, null, null, null);
+        }
     }
 
     /**
@@ -432,8 +443,12 @@ public class SqlUndoRecorder {
         try {
             return connection.getSchema();
         } catch (Exception e) {
-            // 驱动不支持 getSchema 时返回 null，让驱动按默认 schema 找
-            return null;
+            // ⚠️ 这里原来是**空 catch**（连日志都没有）—— 它不是「降级」，而是**把失败的原因报错了**：
+            //    schema 取不到 → getPrimaryKeys 查不到主键 → 落库的 SKIPPED 原因写成
+            //    「目标表 X 没有主键」。审批人会照着这个**错误的原因**排查，而真实原因零痕迹。
+            //    现在改成：记一条 WARN，并抛 SkipCaptureException 让原因如实落库。
+            log.warn("读取数据库 schema 失败，无法确认主键。cause={}", e.toString());
+            throw new SkipCaptureException("读取数据库元数据失败，无法确认主键：" + e.getMessage());
         }
     }
 
@@ -582,7 +597,15 @@ public class SqlUndoRecorder {
         if (value instanceof byte[] || value instanceof java.sql.Blob || value instanceof java.sql.Clob) {
             throw new IllegalStateException("二进制列无法写成 SQL 字面量：" + value.getClass().getName());
         }
-        return "'" + value.toString().replace("'", "''") + "'";
+        // ⚠️ 反斜杠必须**先**转义，再转义单引号（顺序反了会把刚加的反斜杠又转义一遍）。
+        //
+        // 为什么不能只转义单引号：MySQL 的字符串字面量里反斜杠本身是转义字符，
+        // 于是值 'a\b'（一个反斜杠）会被读成 a + 退格(0x08) —— 实测：
+        //     HEX('a\b') = 6108（长度 2），而正确形式 HEX('a\\b') = 615C62（长度 3）
+        // 后果不是报错，而是**回滚把数据还原成错误的值**，而且终端里退格会覆盖字符、
+        // 人工核对时肉眼看不出来。
+        String escaped = value.toString().replace("\\", "\\\\").replace("'", "''");
+        return "'" + escaped + "'";
     }
 
     /** 前镜像里只要有一列是二进制/大对象，整次留存就降级为 SKIPPED。 */

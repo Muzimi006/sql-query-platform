@@ -6,8 +6,10 @@ import com.example.sqlquery.dialect.SqlDialect;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.entity.SqlReviewRequest;
 import com.example.sqlquery.exception.BusinessException;
+import org.springframework.dao.DuplicateKeyException;
 import com.example.sqlquery.mapper.SqlReviewRequestMapper;
 import com.example.sqlquery.mapper.SqlReviewUndoMapper;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import com.example.sqlquery.service.SqlUndoRecorder;
 import com.example.sqlquery.entity.SqlReviewUndo;
 import com.example.sqlquery.service.DbSourceService;
@@ -79,19 +81,22 @@ public class SqlReviewConsumer {
     private final SqlPermissionService sqlPermissionService;
     private final SqlUndoRecorder undoRecorder;
     private final SqlReviewUndoMapper undoMapper;
+    private final SqlPlatformMetrics metrics;
 
     public SqlReviewConsumer(SqlReviewRequestMapper reviewMapper,
                              DbSourceService dbSourceService,
                              ConnectionManager connectionManager,
                              SqlPermissionService sqlPermissionService,
                              SqlUndoRecorder undoRecorder,
-                             SqlReviewUndoMapper undoMapper) {
+                             SqlReviewUndoMapper undoMapper,
+                             SqlPlatformMetrics metrics) {
         this.reviewMapper = reviewMapper;
         this.dbSourceService = dbSourceService;
         this.connectionManager = connectionManager;
         this.sqlPermissionService = sqlPermissionService;
         this.undoRecorder = undoRecorder;
         this.undoMapper = undoMapper;
+        this.metrics = metrics;
     }
 
     /**
@@ -158,6 +163,11 @@ public class SqlReviewConsumer {
             return;
         }
 
+        // ⭐ 本次的写语句**到底有没有生效**。两种失败对"要不要去核对数据"的答案相反：
+        //     false → 取像或语句本身失败，事务已回滚，什么都没执行
+        //     true  → 语句已提交生效，只是结果没写回工单
+        boolean executed = false;
+
         try {
             // ⚠️ 用 getEnabledByIdAndUserId（要求启用），不是 getByIdAndUserId。
             //
@@ -185,6 +195,8 @@ public class SqlReviewConsumer {
             //    所以「改了但没留痕」和「留了痕但没改」都不会发生。
             SqlUndoRecorder.WriteResult result = undoRecorder.executeWithUndo(
                     dbSource, request.getSqlText());
+            // ⭐ 从这一刻起，业务库上的写**已经提交**了 —— 后面再失败也不能说"什么都没做"
+            executed = true;
 
             persistUndo(reviewId, result.capture());
 
@@ -194,10 +206,22 @@ public class SqlReviewConsumer {
                     reviewId, validation.sqlType(), result.affectedRows(),
                     result.capture().status());
         } catch (Exception e) {
-            log.error("工单执行失败。reviewId={}", reviewId, e);
+            String why = executed
+                    ? "本次写语句已生效，但结果未能写回工单，请先核对数据："
+                    : "本次未执行任何语句（已回滚）：";
+            log.error("工单执行失败。reviewId={}, executed={}", reviewId, executed, e);
+
+            if (!executed) {
+                // ⭐ 三态里的 FAILED 要**真的写下来**：
+                //    在这之前它是个"永远不出现的状态"，任何按 capture_status='FAILED'
+                //    写的巡检/告警静默地永远不会触发。
+                //    ⚠️ executed=true 时**不能**覆盖 —— 那时留痕可能已经成功落库了，
+                //    把一条好的 CAPTURED 记录改写成 FAILED 等于亲手毁掉回滚依据。
+                persistUndo(reviewId, SqlUndoRecorder.UndoCapture.failed(why + brief(e.getMessage())));
+            }
 
             // 只取 message 不取堆栈：error_message 是给用户看的字段，堆栈在日志里
-            finish(reviewId, ReviewStatus.FAILED, null, brief(e.getMessage()));
+            finish(reviewId, ReviewStatus.FAILED, null, why + brief(e.getMessage()));
         }
     }
 
@@ -271,16 +295,40 @@ public class SqlReviewConsumer {
         undo.setCreatedAt(LocalDateTime.now());
 
         try {
-            // 用 replace 而不是 insert：工单被重投时（同一 reviewId 再来一次），
-            // 应该覆盖上一笔，而不是因为主键冲突把这次执行变成失败
-            undoMapper.deleteById(reviewId);
+            // ⚠️ **先 insert，不要先 delete。**
+            //
+            // 原来写的是 deleteById → insert（目的是让重投时能覆盖）。
+            // 但那样有个真实的坏结果：**insert 一失败，连上一笔留痕也一起没了** ——
+            // 把"少了一条新记录"放大成"回滚依据全丢了"。
+            // 改成先 insert 之后，第一次执行就是**一条原子 insert**，失败时什么都没破坏；
+            // 只有真的撞主键（同一工单被重复执行）才走覆盖分支。
             undoMapper.insert(undo);
-        } catch (Exception e) {
-            log.error("工单执行结果未能留存（数据已改动，反向 SQL 见本条日志）。reviewId={}, status={}",
-                    reviewId, capture.status(), e);
-            if (capture.inverseSql() != null && !capture.inverseSql().isEmpty()) {
-                log.error("未落库的反向 SQL（reviewId={}）：\n{}", reviewId, capture.inverseSql());
+        } catch (DuplicateKeyException e) {
+            // 同一工单被重复执行（重投）：用新的一笔覆盖旧的
+            try {
+                undoMapper.deleteById(reviewId);
+                undoMapper.insert(undo);
+            } catch (Exception e2) {
+                undoPersistFailed(reviewId, capture, e2);
             }
+        } catch (Exception e) {
+            undoPersistFailed(reviewId, capture, e);
+        }
+    }
+
+    /**
+     * 留存失败：计数 + 把反向 SQL 打进日志。
+     *
+     * <p>这里**不能只是记一条日志** —— 那条日志是回滚依据的最后一个落脚点，
+     * 而日志会轮转。所以必须留一个可告警的计数器（{@code review.undo.persist.failed}），
+     * "持续大于 0"就意味着**有一批工单执行过、却没有回滚依据**。
+     */
+    private void undoPersistFailed(Long reviewId, SqlUndoRecorder.UndoCapture capture, Exception e) {
+        metrics.recordUndoPersistFailed();
+        log.error("工单执行结果未能留存（数据已改动，反向 SQL 见本条日志）。reviewId={}, status={}",
+                reviewId, capture.status(), e);
+        if (capture.inverseSql() != null && !capture.inverseSql().isEmpty()) {
+            log.error("未落库的反向 SQL（reviewId={}）：\n{}", reviewId, capture.inverseSql());
         }
     }
 

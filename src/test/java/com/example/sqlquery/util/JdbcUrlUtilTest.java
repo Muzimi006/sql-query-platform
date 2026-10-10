@@ -21,7 +21,11 @@ class JdbcUrlUtilTest {
     /** MySQL 的公共参数部分。引用常量而不是写死数字，避免两处各写一个 5000。 */
     private static final String MYSQL_PARAMS =
             "?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true"
-                    + "&connectTimeout=" + JdbcUrlUtil.CONNECT_TIMEOUT_MS;
+                    + "&connectTimeout=" + JdbcUrlUtil.CONNECT_TIMEOUT_MS
+                    // ⚠️ 读超时也在这条链路上，而且它比 connectTimeout 重要：
+                    //    MySQL 驱动默认 socketTimeout=0 = **永不超时**，
+                    //    数据库半死时查询会永久挂住（池子只有 5 条连接）。
+                    + "&socketTimeout=60000";
 
     private DbSource dbSource(String type, String host, Integer port, String databaseName) {
         DbSource dbSource = new DbSource();

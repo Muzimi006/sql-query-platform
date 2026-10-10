@@ -201,6 +201,24 @@ class SqlUndoRecorderTest {
     }
 
     @Test
+    @DisplayName("⭐⭐ 反斜杠也必须转义 —— 只转义单引号会让回滚把数据改错")
+    void literalMustEscapeBackslashToo() {
+        // 实测过 MySQL 的语义（这不是推断）：
+        //     SELECT HEX('a\b')  → 6108   （长度 2：a + 退格 0x08）
+        //     SELECT HEX('a\\b') → 615C62 （长度 3：a \ b）
+        // 也就是说，反向 SQL 里原样写一个反斜杠，回滚之后的值**是错的**，
+        // 而且终端里退格会覆盖掉前一个字符，人工核对时看不出来。
+        assertEquals("'a\\\\b'", SqlUndoRecorder.literal("a\\b"),
+                "值里的反斜杠必须转义成两个，否则 MySQL 会把它当转义字符解释");
+
+        // Windows 路径是最常见的受害者
+        assertEquals("'C:\\\\temp\\\\new'", SqlUndoRecorder.literal("C:\\temp\\new"));
+
+        // 反斜杠与单引号同时出现时，两个都要转义（顺序：先反斜杠再单引号）
+        assertEquals("'O''Brien\\\\x'", SqlUndoRecorder.literal("O'Brien\\x"));
+    }
+
+    @Test
     @DisplayName("⭐ 二进制列：判定为不可留存，而且绝不生成一条「看起来对」的语句")
     void binaryColumnsShouldBeRejected() {
         assertTrue(SqlUndoRecorder.hasUnsupportedValue(List.of(row("id", 1L, "blob", new byte[]{1, 2}))));

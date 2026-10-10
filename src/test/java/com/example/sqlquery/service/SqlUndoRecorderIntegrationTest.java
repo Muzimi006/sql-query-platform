@@ -145,6 +145,40 @@ class SqlUndoRecorderIntegrationTest {
     }
 
     @Test
+    @DisplayName("⭐⭐ 值里带反斜杠：反向 SQL 必须**逐字节**还原（只转义单引号会把数据改错）")
+    void backslashValueShouldBeRestoredExactly() throws Exception {
+        // 前镜像里放进一个带反斜杠的值（用参数化写，避免测试代码自己的转义干扰）
+        String original = "C:\\temp\\new";
+        try (Connection connection = dataSource.getConnection();
+             java.sql.PreparedStatement ps = connection.prepareStatement(
+                     "UPDATE " + PROBE_TABLE + " SET note = ? WHERE id = 3")) {
+            ps.setString(1, original);
+            ps.executeUpdate();
+        }
+        assertEquals(original, readNote(3), "前置条件：库里确实存着一个带反斜杠的值");
+
+        // ⚠️ 必须让这条语句**真的改到 note 列** ——
+        //    反向 SQL 只包含"前后有变化的列"，不改 note 的话那个反斜杠根本不会进反向语句，
+        //    测试就验不到东西（第一版就是这么写错的）。
+        //    这条语句本身不含反斜杠 —— 反斜杠只出现在**前镜像**里。
+        SqlUndoRecorder.WriteResult result = recorder.executeWithUndo(dbSource,
+                "UPDATE " + PROBE_TABLE + " SET note = 'no-backslash-anymore' WHERE id = 3");
+
+        assertEquals(UndoStatus.CAPTURED, result.capture().status());
+        assertEquals("no-backslash-anymore", readNote(3), "先确认改动生效");
+
+        // 生成的反向 SQL 里，那个反斜杠必须是转义过的（写成两个）
+        String inverseSql = result.capture().inverseSql();
+        assertTrue(inverseSql.contains("\\\\"),
+                "反向 SQL 里的反斜杠必须转义成两个，实际：" + inverseSql);
+
+        // ⭐⭐ 决定性断言：跑回去之后必须**逐字节等于原值**
+        execute(inverseSql);
+        assertEquals(original, readNote(3),
+                "反向 SQL 必须把值原样还原；如果只转义单引号，这里会变成 C:<退格>temp<退格>new");
+    }
+
+    @Test
     @DisplayName("⭐ DELETE：反向语句是 INSERT，跑回去那一行真的回来了")
     void deleteInverseSqlShouldReallyInsertTheRowBack() throws Exception {
         SqlUndoRecorder.WriteResult result = recorder.executeWithUndo(dbSource,

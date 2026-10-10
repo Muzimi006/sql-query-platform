@@ -12,6 +12,7 @@ import com.example.sqlquery.mapper.SqlReviewRequestMapper;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.common.UndoStatus;
 import com.example.sqlquery.mapper.SqlReviewUndoMapper;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import com.example.sqlquery.service.SqlPermissionService;
 import com.example.sqlquery.service.SqlUndoRecorder;
 import com.example.sqlquery.util.ConnectionManager;
@@ -65,6 +66,7 @@ class SqlReviewConsumerTest {
     private Statement statement;
     private SqlUndoRecorder undoRecorder;
     private SqlReviewUndoMapper undoMapper;
+    private SqlPlatformMetrics metrics;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -82,9 +84,10 @@ class SqlReviewConsumerTest {
         //    SqlUndoRecorder 自己的行为由 SqlUndoRecorderTest 和集成用例覆盖。
         undoRecorder = Mockito.mock(SqlUndoRecorder.class);
         undoMapper = Mockito.mock(SqlReviewUndoMapper.class);
+        metrics = Mockito.mock(SqlPlatformMetrics.class);
 
         consumer = new SqlReviewConsumer(reviewMapper, dbSourceService, connectionManager,
-                permissionService, undoRecorder, undoMapper);
+                permissionService, undoRecorder, undoMapper, metrics);
 
         // 默认：执行成功、改 1 行、留存成功。个别用例再按需覆盖
         Mockito.when(undoRecorder.executeWithUndo(ArgumentMatchers.any(), ArgumentMatchers.anyString()))

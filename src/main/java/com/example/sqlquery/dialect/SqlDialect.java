@@ -239,14 +239,22 @@ public enum SqlDialect {
      */
     public String connectionParams(int connectTimeoutMs) {
         return switch (this) {
+            // ⚠️ socketTimeout 不能省：MySQL 驱动默认 0 = 永不超时。
+            //    业务库 TCP 可达但不再响应时，查询会永久阻塞 —— 而这个池子只有 5 条连接，
+            //    占满之后整个数据源就废了（并发闸门也救不了：许可被挂住的线程带走了）。
+            //    60000 给得比 setQueryTimeout(30/300s) 宽松，正常慢查询不会误杀，
+            //    它兜的是"连接层面已经死了"那种情况。
             case MYSQL -> "?useSSL=false"
                     + "&serverTimezone=Asia/Shanghai"
                     + "&allowPublicKeyRetrieval=true"
-                    + "&connectTimeout=" + connectTimeoutMs;
+                    + "&connectTimeout=" + connectTimeoutMs
+                    + "&socketTimeout=60000";
             case POSTGRESQL -> {
                 // 向上取整到秒：4999ms 也要给够 5 秒，不能因为整除变成 4 秒
                 int seconds = Math.max(1, (connectTimeoutMs + 999) / 1000);
+                // PG 的 socketTimeout 单位是**秒**（和 MySQL 的毫秒不同），所以同样要换算
                 yield "?connectTimeout=" + seconds
+                        + "&socketTimeout=60"
                         + "&sslmode=prefer"
                         + "&ApplicationName=sql-query-platform";
             }

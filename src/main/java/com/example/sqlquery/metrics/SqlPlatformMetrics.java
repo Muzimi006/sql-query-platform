@@ -277,6 +277,21 @@ public class SqlPlatformMetrics {
         registry.counter(PUBLISH_FAILED, TAG_LINK, link).increment();
     }
 
+    /**
+     * 工单执行结果<b>没能留存</b>（前镜像 / 反向 SQL 没写进库）的次数。
+     *
+     * <p>这个计数器存在的理由：那条路径上**业务库的写已经提交了**，
+     * 而回滚依据只活在一条 ERROR 日志里 —— 日志轮转之后，
+     * 「这条工单改了什么、能不能回滚」就再也没有依据了。
+     *
+     * <p>所以它必须可告警：**持续大于 0 就说明有一批工单执行过、却没有回滚依据。**
+     */
+    public static final String UNDO_PERSIST_FAILED = "review.undo.persist.failed";
+
+    public void recordUndoPersistFailed() {
+        registry.counter(UNDO_PERSIST_FAILED).increment();
+    }
+
     /** 熔断器直接拒绝了这次请求（没有去尝试连接）。 */
     public void recordCircuitRejected() {
         registry.counter(CIRCUIT_REJECTED).increment();
