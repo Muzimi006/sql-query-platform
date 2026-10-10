@@ -62,6 +62,25 @@ class PaginationValidationTest {
         assertTrue(validateDbSourcePage(1, 10).isEmpty());
     }
 
+    private Set<ConstraintViolation<SqlReviewController>> validateReviewPage(long page, long size)
+            throws Exception {
+        Method method = SqlReviewController.class.getMethod("mine", long.class, long.class);
+        return validator.validateParameters(
+                new SqlReviewController(null, null), method, new Object[]{page, size});
+    }
+
+    /** 工单列表必须和另外两个分页接口保持同样的防护等级 —— 三个里改一个是最容易出的事。 */
+    @Test
+    void sqlReviewPageShouldHaveSameConstraints() throws Exception {
+        assertTrue(validateReviewPage(1, 10).isEmpty());
+        assertFalse(validateReviewPage(1, PageConstants.MAX_PAGE_SIZE + 1).isEmpty(),
+                "SqlReviewController 的 size 上限漏了");
+        assertFalse(validateReviewPage(0, 10).isEmpty(),
+                "SqlReviewController 的 page 下限漏了");
+        assertFalse(validateReviewPage(1, 0).isEmpty(),
+                "SqlReviewController 的 size 下限漏了");
+    }
+
     /** 两个分页接口必须保持一致的防护等级，这条用例专门防止「只改了一个」。 */
     @Test
     void historyPageShouldHaveSameConstraints() throws Exception {
