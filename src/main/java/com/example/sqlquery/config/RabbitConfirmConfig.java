@@ -50,12 +50,24 @@ public class RabbitConfirmConfig {
             return;
         }
 
-        // 走到这里说明消息<b>没有</b>进入 Broker，任务会一直停在 PENDING。
-        // 兜底在 ExportTaskRecoveryJob：它除了处理"卡在 RUNNING"（消费中断），
-        // 也处理"卡在 PENDING"（消息根本没投出去）—— 两条路都必须有人管，
-        // 否则前端就是一个永远转圈的进度条。
-        log.error("消息被 Broker 否定确认，任务将停留在 PENDING，等待补偿任务处理。correlationId={}, cause={}",
-                correlationId, cause);
+        // 走到这里说明消息<b>没有</b>进入 Broker，对应任务会一直停在初始状态。
+        //
+        // ⚠️ 两条链路的措辞必须分开。工单停在的是 APPROVED 而不是 PENDING ——
+        // 运维按"PENDING"去找工单会一无所获，而排障时"找不到对应记录"
+        // 比"看到一条错误的记录"更费时间。
+        //
+        // 兜底：ExportTaskRecoveryJob 处理导出的 PENDING/RUNNING，
+        // SqlReviewRecoveryJob 处理工单的 APPROVED（重投）和 EXECUTING（判失败）。
+        // 命名前缀是唯一能在这里区分两条链路的信息，所以两个 Producer 都带上了。
+        if (correlationId != null && correlationId.startsWith("review-")) {
+            log.error("消息被 Broker 否定确认，工单将停留在 APPROVED，"
+                            + "等待 SqlReviewRecoveryJob 补偿重投。correlationId={}, cause={}",
+                    correlationId, cause);
+        } else {
+            log.error("消息被 Broker 否定确认，导出任务将停留在 PENDING，"
+                            + "等待 ExportTaskRecoveryJob 处理。correlationId={}, cause={}",
+                    correlationId, cause);
+        }
     }
 
     /** 消息到了交换机但路由不到任何队列时被退回。 */
