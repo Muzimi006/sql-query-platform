@@ -55,7 +55,11 @@ public enum SqlDialect {
             ),
             Set.of("mysql", "information_schema", "performance_schema", "sys"),
             // MySQL 的系统库必须带库名前缀才能访问，所以没有"裸表名"要额外拦
-            Set.of()
+            Set.of(),
+            // EXPLAIN FORMAT=JSON 里"预估扫描行数"的字段
+            "rows_examined_per_scan",
+            // access_type = ALL 就是全表扫描 —— 这个信号比行数本身更值得让审批人看到
+            "access_type", "ALL"
     ),
 
     /**
@@ -102,7 +106,11 @@ public enum SqlDialect {
              * 不去穷举整个 pg_catalog —— 那会把 {@code pg_type} 这种无害的表也一起拦掉，
              * 属于"为了安全把功能搞坏"。
              */
-            Set.of("pg_shadow", "pg_authid", "pg_user_mappings", "pg_subscription")
+            Set.of("pg_shadow", "pg_authid", "pg_user_mappings", "pg_subscription"),
+            // EXPLAIN (FORMAT JSON) 里"预估行数"的字段（注意 PG 的字段名里带空格）
+            "Plan Rows",
+            // Seq Scan = 顺序扫描 = 全表扫描
+            "Node Type", "Seq Scan"
     );
 
     private final String displayName;
@@ -114,9 +122,17 @@ public enum SqlDialect {
     private final Set<String> systemSchemas;
     private final Set<String> dangerousTables;
 
+    /** EXPLAIN 输出里"预估行数"的字段名。 */
+    private final String explainRowsField;
+
+    /** EXPLAIN 输出里表示"全表扫描"的字段名与取值。 */
+    private final String explainFullScanField;
+    private final String explainFullScanValue;
+
     SqlDialect(String displayName, String driverClassName, String jdbcUrlPrefix, int defaultPort,
                boolean supportsDollarQuoting, Set<String> dangerousFunctions,
-               Set<String> systemSchemas, Set<String> dangerousTables) {
+               Set<String> systemSchemas, Set<String> dangerousTables,
+               String explainRowsField, String explainFullScanField, String explainFullScanValue) {
         this.displayName = displayName;
         this.driverClassName = driverClassName;
         this.jdbcUrlPrefix = jdbcUrlPrefix;
@@ -125,6 +141,9 @@ public enum SqlDialect {
         this.dangerousFunctions = dangerousFunctions;
         this.systemSchemas = systemSchemas;
         this.dangerousTables = dangerousTables;
+        this.explainRowsField = explainRowsField;
+        this.explainFullScanField = explainFullScanField;
+        this.explainFullScanValue = explainFullScanValue;
     }
 
     /**
@@ -264,5 +283,36 @@ public enum SqlDialect {
     /** 不带库名前缀也要拦截的表名（小写）。目前只有 PG 需要，原因见上面的注释。 */
     public Set<String> dangerousTables() {
         return dangerousTables;
+    }
+
+    /**
+     * 拼出"只估算、不执行"的 EXPLAIN 语句。
+     *
+     * <p>⚠️ 两个方言的写法不同，而且属于"看起来一样、其实不一样"那一类：
+     * <pre>
+     *   MySQL      : EXPLAIN FORMAT=JSON UPDATE ...
+     *   PostgreSQL : EXPLAIN (FORMAT JSON) UPDATE ...
+     * </pre>
+     *
+     * <p>两者对<b>写语句</b>都只生成执行计划、<b>不真的执行</b>
+     * （除非显式加 {@code ANALYZE}），所以拿它给审批人看影响面是安全的。
+     */
+    public String explainSql(String sql) {
+        return switch (this) {
+            case MYSQL -> "EXPLAIN FORMAT=JSON " + sql;
+            case POSTGRESQL -> "EXPLAIN (FORMAT JSON) " + sql;
+        };
+    }
+
+    public String explainRowsField() {
+        return explainRowsField;
+    }
+
+    public String explainFullScanField() {
+        return explainFullScanField;
+    }
+
+    public String explainFullScanValue() {
+        return explainFullScanValue;
     }
 }
