@@ -8,6 +8,7 @@ import com.example.sqlquery.common.ExportStatus;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.entity.ExportTask;
 import com.example.sqlquery.mapper.ExportTaskMapper;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.util.ConnectionManager;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -17,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -43,6 +45,7 @@ class ExportConsumerIdempotencyTest {
     private ExportTaskMapper exportTaskMapper;
     private DbSourceService dbSourceService;
     private ConnectionManager connectionManager;
+    private SqlPlatformMetrics metrics;
     private ExportConsumer consumer;
 
     @BeforeEach
@@ -55,7 +58,12 @@ class ExportConsumerIdempotencyTest {
         exportTaskMapper = Mockito.mock(ExportTaskMapper.class);
         dbSourceService = Mockito.mock(DbSourceService.class);
         connectionManager = Mockito.mock(ConnectionManager.class);
-        consumer = Mockito.spy(new ExportConsumer(exportTaskMapper, dbSourceService, connectionManager));
+        metrics = Mockito.mock(SqlPlatformMetrics.class);
+        consumer = Mockito.spy(new ExportConsumer(exportTaskMapper, dbSourceService, connectionManager, metrics));
+
+        // 重试用例真等 1 秒 + 2 秒会拖慢整个测试套件，而等待时长本身不是这条用例要验的东西。
+        // 用 spy 把退避替换成"立刻返回 true"，同时把"确实调用了退避"这件事留成可断言的行为。
+        Mockito.doReturn(true).when(consumer).sleepBeforeRetry(Mockito.anyInt());
     }
 
     private ExportTask pendingTask(Long id) {
@@ -175,7 +183,36 @@ class ExportConsumerIdempotencyTest {
     }
 
     @Test
-    @DisplayName("落库失败时：消息 nack 且不重新入队，走死信队列")
+    @DisplayName("⭐ 瞬时故障：重试一次就成功 → ack，不进死信")
+    void transientFailureShouldRetryThenAck() throws Exception {
+        // 认领成功，但两次写回都失败（数据库抖了一下）；重试那一次成功了
+        Mockito.when(exportTaskMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.any()))
+                .thenReturn(1)
+                .thenThrow(new RuntimeException("数据库暂时不可用"))
+                .thenThrow(new RuntimeException("数据库暂时不可用"))
+                .thenReturn(1);
+        ExportTask task = pendingTask(1L);
+        Mockito.when(exportTaskMapper.selectById(1L)).thenReturn(task);
+        Mockito.when(dbSourceService.getByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
+        Mockito.doReturn(0L).when(consumer)
+                .generateCsv(ArgumentMatchers.any(), ArgumentMatchers.anyString(), ArgumentMatchers.any());
+
+        com.rabbitmq.client.Channel channel = Mockito.mock(com.rabbitmq.client.Channel.class);
+        consumer.handle(1L, channel, 42L);
+
+        // 消息必须被 ack：工作已经做完了
+        Mockito.verify(channel).basicAck(42L, false);
+        Mockito.verify(channel, Mockito.never())
+                .basicNack(Mockito.anyLong(), Mockito.anyBoolean(), Mockito.anyBoolean());
+
+        // 而且"重试过"这件事要留下痕迹 —— 否则运维只看到"有点慢"，
+        // 完全不知道下游刚刚抖过一次
+        Mockito.verify(metrics, Mockito.times(1)).recordConsumerRetry(RabbitConfig.EXPORT_QUEUE);
+        Mockito.verify(consumer, Mockito.times(1)).sleepBeforeRetry(1);
+    }
+
+    @Test
+    @DisplayName("⭐ 重试用尽：先退避重试，最后才 nack 进死信")
     void persistenceFailureShouldNackIntoDeadLetterQueue() throws Exception {
         // 第一次 update 是认领（成功），第二次是回写（失败）
         Mockito.when(exportTaskMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.any()))
@@ -193,6 +230,49 @@ class ExportConsumerIdempotencyTest {
         // requeue 必须是 false：持续性故障时重投会在队列里无限打转
         Mockito.verify(channel).basicNack(42L, false, false);
         Mockito.verify(channel, Mockito.never()).basicAck(Mockito.anyLong(), Mockito.anyBoolean());
+
+        // 默认 3 次尝试 = 2 次重试（第 3 次失败后直接进死信，不再重试）
+        Mockito.verify(metrics, Mockito.times(2)).recordConsumerRetry(RabbitConfig.EXPORT_QUEUE);
+        // 退避是递增的：1 倍、2 倍。立刻重试等于没重试
+        Mockito.verify(consumer).sleepBeforeRetry(1);
+        Mockito.verify(consumer).sleepBeforeRetry(2);
+    }
+
+    @Test
+    @DisplayName("重试次数可配置：max-attempts=1 时一次失败就进死信")
+    void maxAttemptsShouldBeConfigurable() throws Exception {
+        ReflectionTestUtils.setField(consumer, "maxAttempts", 1);
+        Mockito.when(exportTaskMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.any()))
+                .thenReturn(1)
+                .thenThrow(new RuntimeException("数据库不可用"));
+        Mockito.when(exportTaskMapper.selectById(1L)).thenReturn(pendingTask(1L));
+        Mockito.when(dbSourceService.getByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
+        Mockito.doReturn(0L).when(consumer)
+                .generateCsv(ArgumentMatchers.any(), ArgumentMatchers.anyString(), ArgumentMatchers.any());
+
+        com.rabbitmq.client.Channel channel = Mockito.mock(com.rabbitmq.client.Channel.class);
+        consumer.handle(1L, channel, 42L);
+
+        Mockito.verify(channel).basicNack(42L, false, false);
+        Mockito.verify(metrics, Mockito.never()).recordConsumerRetry(Mockito.anyString());
+        Mockito.verify(consumer, Mockito.never()).sleepBeforeRetry(Mockito.anyInt());
+    }
+
+    @Test
+    @DisplayName("重试等待期间线程被中断（应用正在关闭）→ 立刻放弃并进死信")
+    void interruptedRetryShouldGiveUpImmediately() throws Exception {
+        // 这条用例要验的是真实实现，不能用 setUp 里那个"永远返回 true"的 spy
+        ExportConsumer plain = new ExportConsumer(exportTaskMapper, dbSourceService, connectionManager, metrics);
+        ReflectionTestUtils.setField(plain, "retryBackoffMs", 60_000);
+
+        Thread.currentThread().interrupt();
+        try {
+            assertFalse(plain.sleepBeforeRetry(1),
+                "线程已中断时不能继续睡 60 秒 —— 那会让关闭流程卡住");
+        } finally {
+            // 清掉中断标记，否则会影响后面跑的用例
+            Thread.interrupted();
+        }
     }
 
     @Test

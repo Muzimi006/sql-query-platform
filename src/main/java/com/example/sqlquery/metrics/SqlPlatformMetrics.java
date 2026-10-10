@@ -218,6 +218,24 @@ public class SqlPlatformMetrics {
                 .register(registry);
     }
 
+    /** 消费者因**基础设施故障**重试了一次投递，按队列名分标签。 */
+    public static final String CONSUMER_RETRY = "mq.consumer.retry";
+
+    /**
+     * 记录一次消费重试。
+     *
+     * <p>为什么要单独计数而不是只看日志：重试是**有代价的** ——
+     * 它把消费者线程按在 {@code sleep} 上，而每个队列的消费者是有限的
+     * （{@code prefetch: 1} + 单消费者）。重试次数悄悄涨上去，
+     * 表现出来是"消息处理变慢了"，而不是任何一条报错。
+     *
+     * <p>这个计数器连续增长 = 下游在抖（数据库连不上、网络不通）。
+     * 它**长期为 0 才是正常的**。
+     */
+    public void recordConsumerRetry(String queueName) {
+        registry.counter(CONSUMER_RETRY, "queue", queueName).increment();
+    }
+
     /** 熔断器直接拒绝了这次请求（没有去尝试连接）。 */
     public void recordCircuitRejected() {
         registry.counter(CIRCUIT_REJECTED).increment();

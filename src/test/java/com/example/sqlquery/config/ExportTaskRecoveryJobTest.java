@@ -2,6 +2,7 @@ package com.example.sqlquery.config;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.example.sqlquery.common.ExportStatus;
@@ -19,6 +20,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.time.LocalDateTime;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -95,6 +97,34 @@ class ExportTaskRecoveryJobTest {
         assertTrue(setClause.contains("status"), "必须把状态改成 FAILED，实际 SET：" + setClause);
         assertTrue(setClause.contains("error_message"), "必须写明失败原因，否则用户只看到一个失败图标");
         assertTrue(setClause.contains("finished_at"), "必须写完成时间，否则时长统计永远为空");
+    }
+
+    @Test
+    @DisplayName("⭐ RUNNING 用 started_at 判定、PENDING 用 created_at —— 前者不能把排队时间算进去")
+    void runningShouldUseStartedAtWhilePendingUsesCreatedAt() {
+        Mockito.when(exportTaskMapper.selectList(ArgumentMatchers.<Wrapper<ExportTask>>any()))
+                .thenReturn(List.of(), List.of());
+
+        job.failStuckTasks();
+
+        ArgumentCaptor<Wrapper<ExportTask>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        Mockito.verify(exportTaskMapper, Mockito.times(2)).selectList(captor.capture());
+
+        String runningWhere = ((LambdaQueryWrapper<ExportTask>) captor.getAllValues().get(0)).getSqlSegment();
+        String pendingWhere = ((LambdaQueryWrapper<ExportTask>) captor.getAllValues().get(1)).getSqlSegment();
+
+        // RUNNING 关心的是"**执行**了多久"。用 created_at 会把排队时间也算进去 ——
+        // 队列积压时「排队 6 分钟 + 执行 5 分钟」的正常任务会被判成卡死，
+        // 补偿任务标 FAILED，消费者随后又写回 SUCCESS，用户看到自相矛盾的状态。
+        assertTrue(runningWhere.contains("started_at"),
+                "RUNNING 的判定必须基于认领时刻（started_at），实际：" + runningWhere);
+        assertFalse(runningWhere.contains("created_at"),
+                "RUNNING 的判定不能基于创建时刻（含排队时间），实际：" + runningWhere);
+
+        // PENDING 则是另一回事：那时候**还没有** started_at，只能看创建时刻 ——
+        // 关心的是"提交之后多久还没被人认领"
+        assertTrue(pendingWhere.contains("created_at"),
+                "PENDING 只能基于创建时刻，实际：" + pendingWhere);
     }
 
     @Test

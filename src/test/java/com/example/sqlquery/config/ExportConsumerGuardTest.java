@@ -52,7 +52,7 @@ class ExportConsumerGuardTest {
     @BeforeEach
     void setUp() {
         connectionManager = Mockito.mock(ConnectionManager.class);
-        consumer = new ExportConsumer(null, null, connectionManager);
+        consumer = new ExportConsumer(null, null, connectionManager, null);
         ReflectionTestUtils.setField(consumer, "maxRows", TEST_MAX_ROWS);
         ReflectionTestUtils.setField(consumer, "queryTimeoutSeconds", TEST_TIMEOUT_SECONDS);
     }

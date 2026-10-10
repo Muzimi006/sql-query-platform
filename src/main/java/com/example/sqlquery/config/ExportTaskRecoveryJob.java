@@ -2,6 +2,7 @@ package com.example.sqlquery.config;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.toolkit.support.SFunction;
 import com.example.sqlquery.common.ExportStatus;
 import com.example.sqlquery.entity.ExportTask;
 import com.example.sqlquery.mapper.ExportTaskMapper;
@@ -102,18 +103,36 @@ public class ExportTaskRecoveryJob {
     public void failStuckTasks() {
         LocalDateTime deadline = LocalDateTime.now().minusMinutes(stuckRunningMinutes);
 
+        // ⭐ 两种卡死看的**不是同一个时间列**，这一点很关键：
+        //
+        //   RUNNING → started_at（认领时刻）—— 关心的是"执行了多久"
+        //   PENDING → created_at（创建时刻）—— 关心的是"提交后多久还没被认领"，
+        //              而那时候还没有 started_at 可看
+        //
+        // 以前两者都用 created_at，于是 RUNNING 的判定把**排队时间**也算进去了：
+        // 队列积压时「排队 6 分钟 + 执行 5 分钟」的正常任务会被判成卡死，
+        // 补偿任务标 FAILED，消费者随后又写回 SUCCESS ——
+        // 用户看到"导出成功"却配着一句"已由补偿任务标记为失败"。
         failStuck(ExportStatus.RUNNING, deadline,
-                "任务执行中断（进程重启或消费者异常），已由补偿任务标记为失败，请重新发起导出");
+                "任务执行中断（进程重启或消费者异常），已由补偿任务标记为失败，请重新发起导出",
+                ExportTask::getStartedAt);
         failStuck(ExportStatus.PENDING, deadline,
-                "任务未能投递到消息队列，已由补偿任务标记为失败，请重新发起导出");
+                "任务未能投递到消息队列，已由补偿任务标记为失败，请重新发起导出",
+                ExportTask::getCreatedAt);
     }
 
-    /** 把处于 {@code stuckStatus} 且创建时间早于 {@code deadline} 的任务标记为失败。 */
-    private void failStuck(String stuckStatus, LocalDateTime deadline, String reason) {
+    /**
+     * 把处于 {@code stuckStatus} 且 {@code timeColumn} 早于 {@code deadline} 的任务标记为失败。
+     *
+     * @param timeColumn 用哪个时间列判定 —— RUNNING 传 {@code startedAt}、
+     *                   PENDING 传 {@code createdAt}，理由见 {@link #failStuckTasks()}
+     */
+    private void failStuck(String stuckStatus, LocalDateTime deadline, String reason,
+                           SFunction<ExportTask, ?> timeColumn) {
         List<ExportTask> stuck = exportTaskMapper.selectList(
                 new LambdaQueryWrapper<ExportTask>()
                         .eq(ExportTask::getStatus, stuckStatus)
-                        .lt(ExportTask::getCreatedAt, deadline));
+                        .lt(timeColumn, deadline));
 
         if (stuck.isEmpty()) {
             return;

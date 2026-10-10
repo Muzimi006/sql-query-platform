@@ -21,6 +21,22 @@ public class ExportTask {
 
     private String status;
 
+    /**
+     * 被消费者<b>认领</b>的时刻（PENDING → RUNNING 时写入）。
+     *
+     * <p>为什么要单独一列，而不是用 {@code createdAt}：
+     * 卡死判定要回答的是"<b>认领之后</b>过了多久"，而 createdAt 是"创建之后过了多久" ——
+     * 后者把<b>排队时间</b>也算进去了。
+     *
+     * <p>队列积压时这个差别是致命的：「排队 6 分钟 + 执行 5 分钟」的正常任务
+     * 会被判成卡死（阈值 10 分钟），补偿任务标 FAILED，消费者随后又写回 SUCCESS ——
+     * 用户看到"导出成功"却配着一句"已由补偿任务标记为失败"。
+     *
+     * <p>和 {@code finishedAt} 一样，它是 {@code UPDATE} 而不是 {@code INSERT_UPDATE}：
+     * 任务刚创建时本来就还没被认领。
+     */
+    private LocalDateTime startedAt;
+
     private Long rowCount;
 
     private String errorMessage;

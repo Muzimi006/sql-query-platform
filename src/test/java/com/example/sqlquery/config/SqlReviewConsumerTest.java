@@ -293,6 +293,26 @@ class SqlReviewConsumerTest {
     }
 
     @Test
+    @DisplayName("⭐ 写语句绝不自动重试：落库失败进了死信，UPDATE 也只执行过一次")
+    void writeStatementMustNeverBeRetried() throws Exception {
+        Mockito.when(reviewMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.any()))
+                .thenReturn(1)
+                .thenThrow(new RuntimeException("平台库不可用"));
+        Mockito.when(reviewMapper.selectById(1L))
+                .thenReturn(ticket("update t_user set nickname = 'x' where id = 1"));
+        Mockito.when(statement.executeUpdate(ArgumentMatchers.anyString())).thenReturn(1);
+
+        com.rabbitmq.client.Channel channel = Mockito.mock(com.rabbitmq.client.Channel.class);
+        consumer.handle(1L, channel, 42L);
+
+        // 导出链路（只读）在同样的故障下会退避重试，工单链路**刻意不会** ——
+        // 因为重跑一次 UPDATE 就是再改一次数据。这条断言就是那条铁律的看门人：
+        // 谁要是给这个消费者也加一个重试循环，这里会立刻红。
+        // 至于"执行到一半"的工单，交给 SqlReviewRecoveryJob 判 EXECUTING 超时 → FAILED。
+        Mockito.verify(statement, Mockito.times(1)).executeUpdate(Mockito.anyString());
+    }
+
+    @Test
     @DisplayName("工单被删掉了：什么都不写，也不报错")
     void missingTicketShouldBeANoOp() {
         Mockito.when(reviewMapper.selectById(1L)).thenReturn(null);

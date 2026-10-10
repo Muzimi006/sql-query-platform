@@ -6,6 +6,7 @@ import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.entity.ExportTask;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.mapper.ExportTaskMapper;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.util.ConnectionManager;
 import com.rabbitmq.client.Channel;
@@ -30,7 +31,7 @@ import java.time.LocalDateTime;
 /**
  * 导出任务消费者。
  *
- * <h2>三个必须做对的地方</h2>
+ * <h2>五个必须做对的地方</h2>
  *
  * <p><b>一、重复投递必须幂等。</b>
  * MQ 保证的是"至少一次"投递，不是"恰好一次"。Broker 没收到 ack 就会重投，
@@ -56,6 +57,13 @@ import java.time.LocalDateTime;
  * 但导出链路最初<b>漏了</b> —— 而它用的是<b>同一个连接池</b>（上限 5），
  * 一条挂住的慢 SQL 或者一次全表扫描，影响的不只是这一个导出任务。
  * 见 {@link #generateCsv}。
+ *
+ * <p><b>五、瞬时故障要自己扛过去，扛不过去才交给人。</b>
+ * 原来"写不回去"就一次进死信队列 —— 数据库抖两秒就得人工重放。
+ * 现在退避重试 {@link #maxAttempts} 次。
+ * ⚠️ 这条<b>只对导出成立</b>：导出只允许 SELECT，重跑无副作用；
+ * 工单链路执行的是 UPDATE，重跑 = 再改一次数据，所以它刻意不重试。
+ * 见 {@link #handle}。
  */
 @Slf4j
 @Component
@@ -87,14 +95,60 @@ public class ExportConsumer {
     @Value("${export.query-timeout-seconds:300}")
     private int queryTimeoutSeconds;
 
+    /**
+     * 一次投递最多尝试几次（含第一次）。
+     *
+     * <h2>重试的是「基础设施故障」，不是「业务失败」</h2>
+     *
+     * <p>业务失败（SQL 报错、超出行数上限）在 {@link #execute} 内部就被处理掉了 ——
+     * 它把任务写成 FAILED 然后正常返回，**根本不会走到重试**。
+     * 能走到这里的只有一种情况：<b>连「把结果写回数据库」都做不到</b>
+     * （数据库暂时不可用、连接被掐断）。这类失败是<b>瞬时的</b>，
+     * 过一两秒再试一次往往就好了。
+     *
+     * <p>而原来的处理是<b>一次失败直接进死信队列</b> ——
+     * 数据库抖了两秒，一批导出任务就被打成「需要人工重放」。
+     * 代价完全不对等：人工介入的成本远高于多试两次。
+     *
+     * <h2>为什么这条链路可以重试，而工单链路不行</h2>
+     *
+     * <p>因为<b>导出只允许 SELECT</b>（提交时 {@code SqlValidateUtil} 已按
+     * {@code Set.of(SqlType.SELECT)} 校验过），重跑一次是<b>只读</b>的、无副作用。
+     *
+     * <p>工单链路执行的是 {@code UPDATE}，重跑就是<b>再改一次数据</b> ——
+     * 那正是项目里那条铁律「<b>写语句绝不自动重试</b>」要禁止的事。
+     * 所以 {@link SqlReviewConsumer} <b>刻意没有</b>这个循环。
+     * 两条链路在这里长得不一样，是有意的，不是漏了。
+     */
+    @Value("${mq.consumer.retry.max-attempts:3}")
+    private int maxAttempts = 3;
+
+    /**
+     * 两次尝试之间的等待（毫秒），第 n 次失败后等 {@code n × 这个值}。
+     *
+     * <p>退避而不是立刻重试：如果数据库是真的挂了，立刻重试只会
+     * 用最快的速度把重试次数烧完（三次重试总共几毫秒），等于没重试。
+     *
+     * <p>默认 1 秒线性退避 → 3 次尝试覆盖约 <b>3 秒</b>的故障窗口。
+     * 这个窗口<b>故意不长</b>：等待期间消费者线程是被按住的
+     * （{@code prefetch: 1} 且单消费者，等于这个队列停摆）。
+     * 要把窗口拉长，正确做法是加一条带 TTL 的延迟重试队列
+     * 把等待搬到 Broker 侧，而不是让消费者在这里睡更久。
+     */
+    @Value("${mq.consumer.retry.backoff-ms:1000}")
+    private int retryBackoffMs = 1000;
+
     private final ExportTaskMapper exportTaskMapper;
     private final DbSourceService dbSourceService;
     private final ConnectionManager connectionManager;
+    private final SqlPlatformMetrics metrics;
 
-    public ExportConsumer(ExportTaskMapper exportTaskMapper, DbSourceService dbSourceService, ConnectionManager connectionManager) {
+    public ExportConsumer(ExportTaskMapper exportTaskMapper, DbSourceService dbSourceService,
+                          ConnectionManager connectionManager, SqlPlatformMetrics metrics) {
         this.exportTaskMapper = exportTaskMapper;
         this.dbSourceService = dbSourceService;
         this.connectionManager = connectionManager;
+        this.metrics = metrics;
     }
 
     /**
@@ -111,29 +165,85 @@ public class ExportConsumer {
      *   <li>执行完成，业务结果是 SUCCESS 或 FAILED → <b>ack</b>：
      *       消息被正确处理了。SQL 本身跑失败是业务结果，重投一万次也还是失败
      *       （而且会真的再跑一遍那条 SQL），所以不走重试。</li>
-     *   <li>连"把结果写回数据库"都做不到（数据库不可用等）→ <b>nack 且不重新入队</b>
-     *       → 消息进死信队列。这类失败是基础设施问题，就地重试只会空转。</li>
+     *   <li>连"把结果写回数据库"都做不到（数据库不可用等）→ <b>先退避重试</b>
+     *       （见 {@link #maxAttempts}），<b>重试次数用尽才 nack 且不重新入队</b>
+     *       → 消息进死信队列。</li>
      * </ul>
+     *
+     * <p>⚠️ 这里以前是"一次失败直接进死信"，理由写的是"就地重试只会空转"。
+     * 那句话对<b>持续性</b>故障成立，但把所有"数据库抖了两秒"也一并当成了持续性故障 ——
+     * 结果是一批本来自己就能好的任务被推给人工重放。现在把它拆成两件事：
+     * <b>短窗口内的瞬时故障自己扛过去，扛不过去再交给人</b>。
+     *
+     * <p>为什么需要 {@link #sleepBeforeRetry} 里的退避而不是立刻重试：立刻重试会把
+     * 三次机会在几毫秒内烧完，等于没重试。
      */
     @RabbitListener(queues = RabbitConfig.EXPORT_QUEUE, ackMode = "MANUAL")
     public void handle(Long taskId, Channel channel,
                        @Header(AmqpHeaders.DELIVERY_TAG) long deliveryTag) throws IOException {
-        try {
-            if (!tryClaim(taskId)) {
-                log.info("导出任务已被认领或已完成，跳过本次投递（幂等保护）。taskId={}", taskId);
+        // 认领是否已经成功。它决定重试时该做什么：
+        //   false → 重试的是「认领」这一步（它本身是幂等的条件更新，重试安全）；
+        //   true  → 重试的是「执行 + 回写」（导出只允许 SELECT，重跑无副作用）。
+        // ⚠️ 分这两段是必须的。如果无脑把整个 try 块重来一遍，
+        //    认领已经成功的情况下第二次 tryClaim 会返回 false，
+        //    于是走进「已被认领 → ack」的分支，
+        //    **把一条结果根本没写回的消息 ack 掉了** —— 任务永远停在 RUNNING。
+        boolean claimed = false;
+
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                if (!claimed) {
+                    if (!tryClaim(taskId)) {
+                        log.info("导出任务已被认领或已完成，跳过本次投递（幂等保护）。taskId={}", taskId);
+                        channel.basicAck(deliveryTag, false);
+                        return;
+                    }
+                    claimed = true;
+                }
+
+                execute(taskId);
                 channel.basicAck(deliveryTag, false);
                 return;
-            }
+            } catch (Exception e) {
+                if (attempt >= maxAttempts) {
+                    log.error("导出任务尝试 {} 次仍未能落库，投递到死信队列。taskId={}, dlq={}",
+                            maxAttempts, taskId, RabbitConfig.EXPORT_DLQ, e);
+                    // requeue=false：进死信交换机。
+                    // 用 true 重投的话，如果是持续性故障（数据库连不上），
+                    // 消息会在队列里无限打转，把 CPU 和日志一起打满。
+                    channel.basicNack(deliveryTag, false, false);
+                    return;
+                }
 
-            execute(taskId);
-            channel.basicAck(deliveryTag, false);
-        } catch (Exception e) {
-            log.error("导出任务处理失败且结果未能落库，投递到死信队列。taskId={}, dlq={}",
-                    taskId, RabbitConfig.EXPORT_DLQ, e);
-            // requeue=false：直接进死信交换机。
-            // 用 true 重投的话，如果是持续性故障（数据库连不上），
-            // 消息会在队列里无限打转，把 CPU 和日志一起打满。
-            channel.basicNack(deliveryTag, false, false);
+                metrics.recordConsumerRetry(RabbitConfig.EXPORT_QUEUE);
+                log.warn("导出任务第 {}/{} 次尝试失败，{} ms 后重试。taskId={}, cause={}",
+                        attempt, maxAttempts, (long) retryBackoffMs * attempt, taskId, e.toString());
+
+                if (!sleepBeforeRetry(attempt)) {
+                    // 线程被中断（应用正在关闭）：不吞掉中断，也不假装还能继续。
+                    // 把消息推给死信队列，让人看得见；任务状态由补偿任务收尾。
+                    Thread.currentThread().interrupt();
+                    log.error("重试等待被中断，投递到死信队列。taskId={}, dlq={}",
+                            taskId, RabbitConfig.EXPORT_DLQ);
+                    channel.basicNack(deliveryTag, false, false);
+                    return;
+                }
+            }
+        }
+    }
+
+    /**
+     * 退避等待。返回 {@code false} 表示等待期间线程被中断。
+     *
+     * <p>包级可见是为了让单元测试能把它替换掉 —— 否则每条重试用例都要真等好几秒。
+     * 见 {@link ExportConsumerIdempotencyTest}。
+     */
+    boolean sleepBeforeRetry(int attempt) {
+        try {
+            Thread.sleep((long) retryBackoffMs * attempt);
+            return true;
+        } catch (InterruptedException e) {
+            return false;
         }
     }
 
@@ -147,7 +257,11 @@ public class ExportConsumer {
         int affected = exportTaskMapper.update(null, new LambdaUpdateWrapper<ExportTask>()
                 .eq(ExportTask::getId, taskId)
                 .eq(ExportTask::getStatus, ExportStatus.PENDING)
-                .set(ExportTask::getStatus, ExportStatus.RUNNING));
+                .set(ExportTask::getStatus, ExportStatus.RUNNING)
+                // ⭐ 认领的这一刻要记下来：卡死判定看的是"认领之后过了多久"，
+                //    而不是"创建之后过了多久" —— 后者会把排队时间也算进去，
+                //    队列积压时正常任务会被误判成卡死。见 ExportTaskRecoveryJob。
+                .set(ExportTask::getStartedAt, LocalDateTime.now()));
         return affected == 1;
     }
 

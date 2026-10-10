@@ -53,7 +53,7 @@ class ExportCsvEncodingTest {
 
         // 构造参数里已经没有 AesUtil：它原先被注入进来却从头到尾没被用过
         // （数据源密码的解密统一在 ConnectionManager 里做），属于无用依赖，已删除
-        ExportConsumer consumer = new ExportConsumer(null, null, connectionManager);
+        ExportConsumer consumer = new ExportConsumer(null, null, connectionManager, null);
 
         // 导出链路有行数上限和查询超时（补上来的保护），
         // 而手工 new 出来的实例没有经过 Spring 注入，这两个字段还是默认值。

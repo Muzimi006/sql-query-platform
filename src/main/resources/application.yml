@@ -98,6 +98,26 @@ mq:
   #    进了死信的消息对应的业务状态是未知的，自动重放等于把说不清状态的操作再执行一遍。
   dlq-check-cron: "0 */10 * * * ?"
 
+  # 队列容量。x-max-length / x-overflow 是**队列参数** ——
+  # ⚠️ 给已存在的同名队列改这两个值，Broker 会报 PRECONDITION_FAILED (406)：
+  #    升级时先 rabbitmqctl delete_queue export.queue review.queue，让应用重新声明。
+  queue:
+    max-length: 10000
+    # 满了以后转投死信，而不是默认的 drop-head（drop-head 会丢队头那条最老的消息）
+    overflow: reject-publish-dlx
+
+  # 消费者重试策略。⚠️ 只作用于**导出链路**（只读 SQL）：
+  #    工单链路执行的是 UPDATE，重跑等于再改一次数据，所以刻意不重试。
+  consumer:
+    retry:
+      # 一次投递最多尝试几次（含第一次）。3 次 = 最多重试 2 次。
+      # 只有"基础设施故障"（连不上库、写不回结果）才会走到重试；业务失败不会。
+      max-attempts: 3
+      # 第 n 次失败后等 n × 这个值（线性退避）→ 默认覆盖约 3 秒的故障窗口。
+      # 等待期间消费者线程是被按住的（prefetch=1 且单消费者 = 这个队列停摆），
+      # 所以别把它调得很大；要把窗口拉长应该加 TTL 延迟重试队列，把等待搬到 Broker 侧。
+      backoff-ms: 1000
+
 redis:
   # 数据源失效广播的订阅容器重试间隔。
   # 订阅容器刻意没有自动启动（自动启动会在容器刷新阶段同步连 Redis，
@@ -240,10 +260,20 @@ export:
   query-timeout-seconds: 300
 
   # 超过这个时长还停在 PENDING / RUNNING 的任务会被补偿任务标记为失败。
-  # ⚠️ 它和上面的 query-timeout-seconds 有约束关系：
-  #    判定用的是 created_at（含排队时间），所以阈值 ≈ 执行上限 + 排队余量。
-  #    300 秒执行 + 约 4 分钟排队余量 = 600 秒。
-  #    调大 query-timeout-seconds 时必须同步调大这个值，否则会把正常执行的导出判成卡死。
+  #
+  # ⚠️ 两种卡死看的**不是同一个时间列**（见 migrate_004）：
+  #    RUNNING → started_at（**认领时刻**）—— 只关心"执行了多久"
+  #    PENDING → created_at（创建时刻）  —— 关心"提交后多久还没被认领"
+  #
+  #    以前两者都用 created_at，于是 RUNNING 的判定把**排队时间**也算进去了：
+  #    队列积压时「排队 6 分钟 + 执行 5 分钟」的正常任务会被判成卡死，
+  #    补偿任务标 FAILED，消费者随后又写回 SUCCESS ——
+  #    用户看到"导出成功"却配着一句失败原因。
+  #
+  # ⚠️ 加了 started_at 之后，这个阈值和 query-timeout-seconds 的约束更直接了：
+  #    阈值只需要覆盖"执行上限 + 余量"，**不再需要为排队留余量**。
+  #    300 秒执行 + 300 秒余量 = 600 秒（保持原值不变，但含义收紧了）。
+  #    调大 query-timeout-seconds 时仍必须同步调大这个值。
   stuck-running-minutes: 10
   recovery-cron: "0 */5 * * * ?"
 
