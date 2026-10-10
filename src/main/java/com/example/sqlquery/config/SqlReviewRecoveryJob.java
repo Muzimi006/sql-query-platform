@@ -146,7 +146,17 @@ public class SqlReviewRecoveryJob {
     }
 
     private void resendOne(SqlReviewRequest request, LocalDateTime giveUpBefore) {
-        if (request.getUpdatedAt() != null && request.getUpdatedAt().isBefore(giveUpBefore)) {
+        // ⚠️ 放弃判定用 **reviewedAt**，不是 updatedAt。
+        //
+        // reviewedAt 是"审批通过的那一刻"，写一次之后再没被动过；
+        // 而 updatedAt 会被下面"重投成功"那一步刷新（那是为了让重投间隔生效）。
+        // 如果这里也用 updatedAt，重投会不断把计时往后推，
+        // **放弃条件就永远不成立** —— 一个 Broker 长期不可用的环境里，
+        // 工单会一直重投到天荒地老，而不是在 24 小时后停下来。
+        LocalDateTime approvedAt = request.getReviewedAt() != null
+                ? request.getReviewedAt()
+                : request.getUpdatedAt();   // 兜底：老数据可能没有 reviewedAt
+        if (approvedAt != null && approvedAt.isBefore(giveUpBefore)) {
             int affected = reviewMapper.update(null, new LambdaUpdateWrapper<SqlReviewRequest>()
                     .eq(SqlReviewRequest::getId, request.getId())
                     .eq(SqlReviewRequest::getStatus, ReviewStatus.APPROVED)
@@ -166,18 +176,36 @@ public class SqlReviewRecoveryJob {
             return;
         }
 
-        // 条件更新不是必需的（重复投递本身无害），这里也不改状态 ——
-        // 保持 APPROVED 才是准确的状态描述：批了，还没执行。
         try {
             rabbitTemplate.convertAndSend(RabbitConfig.REVIEW_QUEUE, request.getId(),
                     new CorrelationData("review-retry-" + request.getId()));
-            log.warn("工单批准后 {} 分钟仍未被执行，补偿任务重新投递。reviewId={}",
-                    stuckApprovedMinutes, request.getId());
         } catch (AmqpException e) {
+            // 投递都没成功，就不要动 updated_at —— 下一轮早点重试更好。
             // 包一层只是为了让上面的日志能区分「投递失败」和「意外异常」；
             // 真正的重试是下一轮定时任务，不在这里就地重试。
             throw e;
         }
+
+        // ⭐⭐ 投递成功之后必须把 updated_at 推到现在，**否则重投会被无限放大**。
+        //
+        // 为什么：selectStuck 的选中条件是 updated_at < now - stuckApprovedMinutes（默认 10 分钟），
+        // 而 cron 周期默认是 **5 分钟** —— 比阈值还短。
+        // 重投时不刷新 updated_at 的话，下一轮（5 分钟后）这一行**仍然满足条件**，
+        // 于是被再次投递……一条卡住的工单 24 小时内最多被重投 **288 次**。
+        //
+        // 重复投递本身是安全的（消费者条件认领，多余的会被 ack 掉），
+        // 但积压时这会实打实地**加剧队列拥堵**，还会把日志刷满。
+        // 刷新之后，重投间隔就等于 stuckApprovedMinutes（10 分钟），频率降到 1/2。
+        //
+        // ⚠️ 状态仍然是 APPROVED —— 那才是准确的状态描述（批了，还没执行）。
+        //    这一条更新只动 updated_at。
+        reviewMapper.update(null, new LambdaUpdateWrapper<SqlReviewRequest>()
+                .eq(SqlReviewRequest::getId, request.getId())
+                .eq(SqlReviewRequest::getStatus, ReviewStatus.APPROVED)
+                .set(SqlReviewRequest::getUpdatedAt, LocalDateTime.now()));
+
+        log.warn("工单批准后 {} 分钟仍未被执行，补偿任务重新投递。reviewId={}",
+                stuckApprovedMinutes, request.getId());
     }
 
     /** EXECUTING 卡住 → 标记失败，并明确告诉人「结果未知」。 */

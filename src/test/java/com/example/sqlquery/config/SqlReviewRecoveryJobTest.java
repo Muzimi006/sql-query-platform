@@ -110,9 +110,44 @@ class SqlReviewRecoveryJobTest {
         job.recover();
 
         // 重投**不改状态**：APPROVED 仍然是对这一行最准确的描述（批了，还没执行）。
-        // 如果这里顺手把状态改成别的，反倒会把一条本来能被正常消费的工单弄坏
-        Mockito.verify(reviewMapper, Mockito.never())
-                .update(ArgumentMatchers.isNull(), ArgumentMatchers.<Wrapper<SqlReviewRequest>>any());
+        // 如果这里顺手把状态改成别的，反倒会把一条本来能被正常消费的工单弄坏。
+        //
+        // ⚠️ 但它**会**更新 updated_at —— 而且是必须更新：
+        //    selectStuck 的条件是 updated_at < now - stuckApprovedMinutes(10 分钟)，
+        //    而 cron 周期是 5 分钟。不刷新的话下一轮立刻又选中它，
+        //    一条卡住的工单 24 小时内会被重投 288 次。
+        ArgumentCaptor<Wrapper<SqlReviewRequest>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        Mockito.verify(reviewMapper).update(ArgumentMatchers.isNull(), captor.capture());
+
+        LambdaUpdateWrapper<SqlReviewRequest> wrapper = (LambdaUpdateWrapper<SqlReviewRequest>) captor.getValue();
+        Map<String, Object> params = wrapper.getParamNameValuePairs();
+
+        assertTrue(wrapper.getSqlSet().contains("updated_at"),
+                "重投后必须刷新 updated_at，否则重投会被放大到每 5 分钟一次");
+        assertFalse(params.values().contains(ReviewStatus.FAILED),
+                "重投不能把状态改成 FAILED");
+        assertTrue(wrapper.getSqlSegment().contains("status"),
+                "更新必须带上状态条件（只能刷仍然 APPROVED 的那一行）");
+    }
+
+    @Test
+    @DisplayName("⭐ 放弃重投的判定用 reviewedAt 而不是 updatedAt —— 否则永远放弃不了")
+    void giveUpMustUseReviewedAtNotUpdatedAt() {
+        // 批准时间在 30 小时前（超过 24h 上限），但 updated_at 是刚刚（因为一直在重投）
+        SqlReviewRequest stale = ticket(1L, ReviewStatus.APPROVED, LocalDateTime.now());
+        stale.setReviewedAt(LocalDateTime.now().minusHours(30));
+        stubPages(List.of(stale), List.of());
+        Mockito.when(reviewMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.<Wrapper<SqlReviewRequest>>any()))
+                .thenReturn(1);
+
+        job.recover();
+
+        // 必须放弃重投（改成 FAILED），而不是又发一条消息
+        Mockito.verify(rabbitTemplate, Mockito.never()).convertAndSend(
+                ArgumentMatchers.anyString(), ArgumentMatchers.any(Object.class),
+                ArgumentMatchers.any(CorrelationData.class));
+        Mockito.verify(reviewMapper).update(ArgumentMatchers.isNull(),
+                ArgumentMatchers.<Wrapper<SqlReviewRequest>>any());
     }
 
     @Test
