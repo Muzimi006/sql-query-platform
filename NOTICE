@@ -1,0 +1,24 @@
+sql-query-platform
+Copyright 2026 Muzimi006 (https://github.com/Muzimi006)
+
+本产品包含由第三方开发的软件，其许可如下（均为其 POM 中声明的许可之一，
+本项目取其中的宽松选项使用）：
+
+  Spring Boot / Spring Framework / Spring AMQP / Spring Data Redis  — Apache License 2.0
+  MyBatis-Plus / MyBatis                                          — Apache License 2.0
+  Jackson（databind / datatype-jsr310）                            — Apache License 2.0
+  Micrometer / micrometer-registry-prometheus                     — Apache License 2.0
+  HikariCP                                                        — Apache License 2.0
+  springdoc-openapi                                               — Apache License 2.0
+  JSqlParser                                                      — Apache License 2.0 或 LGPL-2.1（双许可，本项目取 Apache-2.0）
+  RabbitMQ Java Client (amqp-client)                              — Apache License 2.0 / GPL v2 / MPL 2.0（三许可，本项目取 Apache-2.0）
+  java-jwt (Auth0)                                                — MIT License
+  MySQL Connector/J                                               — GNU General Public License v2.0 with FOSS Exception
+  PostgreSQL JDBC Driver                                          — BSD 2-Clause License
+
+前端依赖（Vue 3 / Vite / axios / vue-router / pinia 等）为 MIT License，
+详见 frontend/package.json 与其各自仓库。
+
+⚠️ 这份清单由依赖的 POM 声明整理，**不是法律意见**：
+它覆盖的是直接依赖中许可最需要注意的几个；若要把本项目用于商业分发，
+请以 `mvn dependency:tree` 的完整清单为准，并让法务过一遍。

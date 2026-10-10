@@ -1,0 +1,188 @@
+# Prometheus 告警规则（第六轮新增，item 3 的第二件）
+#
+# ⚠️ 先说清这份文件**能做什么、不能做什么**：
+#   ✅ 它把「哪些指标该告警、阈值多少、为什么是这个阈值」写成了**可执行的文件**；
+#   ❌ 它**没有被部署过** —— 本机没有 Prometheus/Alertmanager 栈，
+#      所以每条规则**都没有在真实告警链路上验证过**（只能保证语法与指标名正确）。
+#
+# 指标名用的是 **Prometheus 抓取端渲染后的形式**（点变下划线、Counter 补 _total）。
+#
+# 阈值的证据强度分两档，规则里都标了：
+#   【实测】= 有压测/实验数据支撑；【推断】= 按机制估的合理值，需要跑一段时间再调。
+
+groups:
+  - name: sql-query-platform-message-reliability
+    rules:
+      # ── 死信队列：消息进去了就说明「处理失败且结果没落库」 ──
+      - alert: DlqNotEmpty
+        expr: mq_queue_depth{queue=~".*\\.dlq"} > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "死信队列 {{ $labels.queue }} 有 {{ $value }} 条消息"
+          description: |
+            进了死信的是一批「处理失败、且结果未能落库」的消息，对应的业务状态是未知的。
+            **本系统不会自动重放**（里面可能是写语句），需要人工确认后决定重放还是标失败。
+            【实测】这条是真实缺陷的直接信号，持续为 0 才是正常。
+
+      # ── 深度读数失效：区分「队列真空了」和「根本读不到」 ──
+      - alert: DlqDepthStale
+        expr: mq_queue_depth_age_seconds{queue=~".*\\.dlq"} > 60
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "死信队列深度读数已失效 {{ $value }} 秒（{{ $labels.queue }}）"
+          description: |
+            深度是**定时刷新的快照**（默认 15 秒），超过刷新周期说明读不到 Broker。
+            此时 mq_queue_depth 显示的旧值**不代表队列是空的** —— 这正是这条规则存在的理由。
+            同时看 mq_dlq_read_failed_total 是否在涨。
+            【推断】60 秒 = 4 个刷新周期，留了抖动余量。
+
+      # ── 投递确认：Broker 明确否定 / 我们自己等不到 ──
+      - alert: MessagePublishFailing
+        expr: increase(mq_publish_failed_total[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Broker 否定了消息投递（link={{ $labels.link }}）"
+          description: |
+            典型原因是队列满（x-overflow=reject-publish-dlx）或磁盘告警。
+            两条链路对它的处置不同：工单吞掉异常等补偿重投、导出**立刻把任务标失败**。
+            【实测】持续大于 0 就是 Broker 侧有问题。
+
+      - alert: PublishUnconfirmed
+        expr: increase(mq_publish_unconfirmed_total[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "投递没等到确认（link={{ $labels.link }}）"
+          description: |
+            与上一条的区别：上一条是「Broker 明确说没收」，这条是「**我们没等到回执**」
+            （超时 / 否定确认 / 线程被中断）。两条同时涨说明同一次投递既被拒又被我们发现。
+            【推断】偶发一次可以观察；持续涨说明 Broker 抖动或队列长时间满。
+
+      - alert: MessageNotRoutable
+        expr: increase(mq_message_returned_total[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "有消息路由不到任何队列，已被退回"
+          description: |
+            交换机/绑定写错时会走到这里。⚠️ 注意死信链路的**最后一跳没有这个兜底**：
+            被 nack 的消息由 Broker 直接送死信交换机，路由不到就静默丢弃。
+
+      # ── 回执本身失败 ──
+      - alert: AckFailing
+        expr: increase(mq_ack_failed_total[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "ack/nack 自身失败（link={{ $labels.link }}）"
+          description: |
+            这**不是业务失败**：消息没被确认时 Broker 会重投，重投由幂等认领挡住，
+            不会重复执行。它的意义是「channel/连接不稳」，持续出现要查 Broker 与网络。
+
+  - name: sql-query-platform-availability
+    rules:
+      - alert: CircuitBreakerOpen
+        expr: increase(datasource_circuit_opened_total[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "有数据源被熔断（连续连接失败达到阈值）"
+          description: |
+            【实测】阈值 5 次、冷却 30 秒；被熔断期间**不再尝试连接**，请求毫秒级返回
+            （实测：建连超时 6035ms → 熔断后 0ms，见 DbSourceCircuitBreakerIntegrationTest）。
+            ⚠️ 这个计数器**刻意不带 dataSourceId 标签**（避免指标基数随数据源增删泄漏），
+            要定位是哪个数据源请看日志。
+
+      - alert: RedisSubscriberDown
+        expr: redis_subscriber_up == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis 失效广播订阅不在线"
+          description: |
+            后果是多实例部署时「一台机器改了数据源，另一台机器的连接池还是旧的」。
+            【实测】看门狗只在**容器不再运行**时才发现（默认 30 秒一轮），
+            所以这条规则要等 2 分钟 —— 它本来就是「漏报型」的保护。
+
+      - alert: RedisDegraded
+        expr: increase(redis_degradation_total[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis 不可用，系统正在降级放行（reason={{ $labels.reason }}）"
+          description: |
+            【实测】Redis 停掉后，除注册登录外所有接口都靠降级路径工作（限流失效、缓存回源）。
+            这是**设计内的降级**，但持续大于 0 说明 Redis 真的挂了。
+
+  - name: sql-query-platform-data-safety
+    rules:
+      - alert: QueryHistoryNotSaved
+        expr: increase(query_history_save_failed_total[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "查询历史写入失败"
+          description: |
+            历史是附属品：它没写进去**不影响「这条语句执行成功了」这个事实**
+            （否则用户重试会重复改数据）。但它是「平台库有问题」的早期信号。
+
+      - alert: AuditWriteFailing
+        expr: increase(audit_write_failed_total[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "审计日志写入失败 —— 出现了安全审计缺口"
+          description: |
+            业务照样成功，而「谁在什么时候做了什么」没了。日志会轮转，所以必须有这条告警。
+
+      - alert: UndoCapturePersistFailed
+        expr: increase(review_undo_persist_failed_total[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "工单的前镜像（回滚依据）写入失败"
+          description: |
+            工单执行的是一条人工提交的写语句，前镜像是**唯一的回滚依据**。
+            这条规则响了要立刻人工确认那几条工单（见问题修复档案第十三章）。
+
+  - name: sql-query-platform-capacity
+    rules:
+      - alert: SystemErrorSpike
+        expr: increase(system_error_total[5m]) > 5
+        labels:
+          severity: critical
+        annotations:
+          summary: "全局兜底异常在涨（{{ $value }} 次 / 5 分钟）"
+          description: |
+            ⚠️ 本项目的错误响应是 **HTTP 200 + body 里的 code**（有意为之，见 docs/开发规范.md 偏差登记），
+            所以 http_server_requests{status=...} 上看不出服务端故障 ——
+            **这个计数器是那条链路上唯一可告警的信号。**
+            【推断】5 次/5 分钟是「明显不正常」的量级，接上之后按实际基线调。
+
+      - alert: PoolWaitingHigh
+        expr: datasource_pool_connections_waiting > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "有线程在等业务库连接（dataSourceId={{ $labels.dataSourceId }}）"
+          description: |
+            【实测】业务数据源池上限是 5，等待大于 0 说明闸门与池子不匹配
+            （压测里并发 64 时 pending 峰值 53~54）。要么调闸门上限，要么扩池。
+
+      - alert: ConsumerRetrying
+        expr: increase(mq_consumer_retry_total[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "导出消费者在重试（queue={{ $labels.queue }}）"
+          description: |
+            重试把消费者线程按在 sleep 上（prefetch=1 + 单消费者 = 这个队列停摆），
+            表现得像「消息处理变慢了」而不是任何一条报错。【实测】它长期为 0 才是正常的。
+

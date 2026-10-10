@@ -13,6 +13,22 @@
 	<version>0.0.1-SNAPSHOT</version>
 	<name>sql-query-platform</name>
 	<description>基于 Spring Boot 的在线 SQL 查询与审核平台</description>
+
+	<!--
+	  许可声明。⚠️ 它不只是"填个字段"：
+	  ① 依赖治理工具（license-maven-plugin、企业内部的成分分析）读的就是这里；
+	  ② 仓库根的 LICENSE 文件是给"人"看的，POM 里的是给"工具"看的 —— 两者必须一致。
+	  选 Apache-2.0 的理由：企业最友好（含专利授权），而本项目依赖里
+	  JSqlParser 是 Apache-2.0/LGPL-2.1 双许可、amqp-client 是 AL2/GPLv2/MPL2 三许可，
+	  都可以取其中的 Apache-2.0，所以不存在兼容性障碍（见 NOTICE）。
+	-->
+	<licenses>
+		<license>
+			<name>Apache License, Version 2.0</name>
+			<url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+			<distribution>repo</distribution>
+		</license>
+	</licenses>
 	<properties>
 		<java.version>17</java.version>
 		<!-- 需要 MySQL / Redis / RabbitMQ 的用例统一打 integration 标签，默认排除。
@@ -23,37 +39,24 @@
 		<surefire.excludedGroups>integration</surefire.excludedGroups>
 	</properties>
 	<!--
-	  依赖版本管理。
+	  ⚠️ 这里**故意留空**：曾经用来覆盖 amqp-client 的版本（5.30.0 → 5.35.0），
+	  现在交回 Spring Boot 管理。
 
-	  ⚠️ 覆盖 Spring Boot 受管版本的**正确位置是这里，不是直接依赖上的 <version>**：
-	  写在直接依赖上时，Boot 通过 starter 传进来的那个版本仍然在依赖树里，
-	  于是一棵树里出现两个版本 —— maven-enforcer 的 dependencyConvergence 会直接失败
-	  （这条规则是有价值的：同名不同版本的类在运行时表现为诡异的 NoSuchMethodError）。
-	  写进 dependencyManagement 之后，受管版本会把**所有**路径（含传递依赖）都收敛到同一个。
+	  为什么删掉（这是一次有据可查的决定，不是"清理"）：
+	  ① 那个覆盖**没有写原因**，而作者也拿不出证据说明是 CVE 还是功能修复 ——
+	     覆盖受管版本却不写原因，等于给未来埋一个「不敢碰、也说不清」的坑；
+	  ② Spring Boot 4.1.0 的测试矩阵就是围绕它管理的 5.30.0 做的，
+	     跟着受管版本走 = 跟着官方验证过的组合走；
+	  ③ 升级 Boot 时依赖会**自动**跟上，不需要有人记得手动抬这个数字。
+
+	  如果将来真的需要覆盖（查到了 CVE、或遇到了某个 issue），请：
+	  把版本写进 <dependencyManagement>（不能写在直接依赖的 <version> 上，
+	  否则依赖树里会同时存在两个版本、dependencyConvergence 会失败），
+	  **并在这里写清 CVE 编号或 issue 链接**。
+
+	  背景：maven-enforcer 的 dependencyConvergence 加上当天就抓出了「树里有两个 amqp-client」
+	  （见 docs/开发规范.md §4 与问题修复档案 K-01）。
 	-->
-	<dependencyManagement>
-		<dependencies>
-			<!-- 覆盖 Spring Boot 4.1.0 管理的 amqp-client 版本（Boot 管理的是 5.30.0）。
-
-			     ⚠️ 这里**缺一句原因**，而这是一个真实的风险、不是形式主义：
-			     覆盖受管版本却不写原因，下一个人（包括半年后的自己）就不知道它能不能动 ——
-			     升级 Boot 时只能在「不敢碰」和「赌一把删掉」之间二选一，两种都不是工程决策。
-
-			     需要作者补写的内容（三条里挑一条并附证据）：
-			     ① 安全修复：哪个 CVE、影响什么；
-			     ② 功能修复：哪个 issue / 什么表现、本项目是否真的遇到过；
-			     ③ 只是跟着升级：那就应该删掉这个覆盖，交回 Boot 管理。
-
-			     在那之前，这个覆盖由 maven-enforcer 的 dependencyConvergence 保证
-			     **只影响版本、不产生同名多版本**（这也是它被放进 dependencyManagement
-			     而不是直接依赖上的原因）。 -->
-			<dependency>
-				<groupId>com.rabbitmq</groupId>
-				<artifactId>amqp-client</artifactId>
-				<version>5.35.0</version>
-			</dependency>
-		</dependencies>
-	</dependencyManagement>
 
 	<dependencies>
 		<dependency>
@@ -151,8 +154,10 @@
 			<artifactId>jackson-datatype-jsr310</artifactId>
 		</dependency>
 
-		<!-- amqp-client 的版本在下面的 <dependencyManagement> 里统一覆盖（5.35.0），
-		     这里刻意不写版本 —— 见那边的原因说明。 -->
+		<!-- 不写版本：跟随 Spring Boot 管理的版本（4.1.0 管的是 5.30.0）。
+		     代码里直接用到 com.rabbitmq.client.Channel（手动 ack 的消费者），
+		     所以这个直接依赖是必要的、不是"顺手写的"；但版本交给 Boot。
+		     为什么不覆盖：见文件上方 dependencyManagement 处的说明。 -->
 		<dependency>
 			<groupId>com.rabbitmq</groupId>
 			<artifactId>amqp-client</artifactId>
