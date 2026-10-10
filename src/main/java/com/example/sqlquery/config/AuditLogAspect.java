@@ -2,21 +2,61 @@ package com.example.sqlquery.config;
 
 import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.entity.AuditLog;
+import com.example.sqlquery.exception.RejectedBeforeWorkException;
 import com.example.sqlquery.mapper.AuditLogMapper;
 import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
-import org.aspectj.lang.JoinPoint;
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
-import org.aspectj.lang.annotation.Before;
 import org.springframework.stereotype.Component;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
+/**
+ * 操作审计：记「谁、什么方式、哪个接口」，以及**这次的结果**。
+
+ * <h2>G-07：它曾经把"被拒绝"也记成了成本</h2>
+
+ * <p>原来的实现是 {@code @Before} —— 在控制器方法**之前**就往主库插一条 audit_log。
+ * 而并发闸门在 Service 层（{@code QueryServiceImpl.execute} 的第一句），
+ * 于是**一个还没碰到任何资源的请求，先付了一次主库写**。
+
+ * <p>代价是被压测量出来的，不是推测：并发 8 → 64 时，
+ * 成功吞吐 296.5 → 87.5 QPS，错误率 14% → 92%。
+ * 根因是<b>闸门保护了业务库，成本却记在主库上</b> ——
+ * 而主库连接池同样只有 10 条，每个请求还要写 2 张表（审计 + 历史）。
+
+ * <h2>改成了什么</h2>
+
+ * <ol>
+ *   <li>{@code @Before} → {@code @Around}：<b>先让请求跑，再按结果记</b>。
+ *       这本身也更准确 —— 一条在操作发生<b>之前</b>写的审计记录，
+ *       如果操作随后失败了，它记的就是一件没发生的事。</li>
+ *   <li>被 {@link RejectedBeforeWorkException}（并发闸门 / 熔断拒绝）拒掉的请求
+ *       <b>一条都不写</b>，只记 {@code audit.skipped{reason=rejected-before-work}}。</li>
+ *   <li>结果写进 {@code detail}（{@code [SUCCESS]} / {@code [FAILED:异常类名]}），
+ *       不需要改表结构 —— 这是有意的：避免为了一列信息引入一次迁移。</li>
+ * </ol>
+
+ * <h2>⚠️ 为什么"不写"也要计数</h2>
+
+ * <p>否则「审计少了一条」和「这次请求本来就没有做事」在指标上完全一样。
+ * 安全审计最怕的不是少一条，而是<b>说不清为什么少</b>。
+
+ * <h2>⚠️ 它仍然只覆盖"写了什么"，不覆盖"为什么"</h2>
+
+ * <p>审计记录的是"谁调了哪个接口、结果如何"。它<b>不是</b>数据变更审计 ——
+ * 真正记录数据变化的是工单链路的前镜像 + 反向 SQL（见档案第十三章）。
+ */
 @Aspect
 @Component
 @Slf4j
 public class AuditLogAspect {
+
+    /** 不写审计的原因标签（固定常量，不做成动态字符串）。 */
+    static final String REASON_REJECTED_BEFORE_WORK = "rejected-before-work";
 
     private final AuditLogMapper auditLogMapper;
     private final SqlPlatformMetrics metrics;
@@ -26,26 +66,46 @@ public class AuditLogAspect {
         this.metrics = metrics;
     }
 
-    @Before("execution(* com.example.sqlquery.controller..*(..))")
-    public void auditWriteRequest(JoinPoint joinPoint) {
+    @Around("execution(* com.example.sqlquery.controller..*(..))")
+    public Object auditWriteRequest(ProceedingJoinPoint joinPoint) throws Throwable {
         ServletRequestAttributes attributes =
                 (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
-        if (attributes == null) {
-            return;
+        HttpServletRequest request = attributes == null ? null : attributes.getRequest();
+
+        // GET 不记（读操作量大、且不改变任何东西）；没有请求上下文（定时任务、单测）也不记
+        if (request == null || "GET".equalsIgnoreCase(request.getMethod())) {
+            return joinPoint.proceed();
         }
 
-        HttpServletRequest request = attributes.getRequest();
-        if ("GET".equalsIgnoreCase(request.getMethod())) {
-            return;
+        String outcome;
+        try {
+            Object result = joinPoint.proceed();
+            outcome = "SUCCESS";
+            record(userId(), request, joinPoint, outcome);
+            return result;
+        } catch (RejectedBeforeWorkException e) {
+            // ⭐ 这一条就是一个资源都没碰到就被拒的请求。
+            //    它不是失败，也不该产生任何主库写 —— 但必须留下"为什么没写"的计数。
+            metrics.recordAuditSkipped(REASON_REJECTED_BEFORE_WORK);
+            log.info("请求在碰到任何资源之前被拒，按设计不写审计。uri={}, reason={}",
+                    request.getRequestURI(), e.getMessage());
+            throw e;
+        } catch (Throwable t) {
+            outcome = "FAILED:" + t.getClass().getSimpleName();
+            record(userId(), request, joinPoint, outcome);
+            throw t;
         }
+    }
 
-        Long userId = UserContext.get();
-
+    /** 写一条审计（失败不影响业务，见下方注释）。 */
+    private void record(Long userId, HttpServletRequest request, ProceedingJoinPoint joinPoint,
+                        String outcome) {
         try {
             AuditLog auditLog = new AuditLog();
             auditLog.setUserId(userId);
             auditLog.setAction(request.getMethod());
-            auditLog.setDetail(request.getRequestURI() + " -> " + joinPoint.getSignature().toShortString());
+            auditLog.setDetail(request.getRequestURI() + " -> "
+                    + joinPoint.getSignature().toShortString() + " [" + outcome + "]");
             auditLog.setIp(request.getRemoteAddr());
             auditLogMapper.insert(auditLog);
         } catch (Exception e) {
@@ -55,10 +115,20 @@ public class AuditLogAspect {
             metrics.recordAuditWriteFailed();
             log.error("审计日志写入失败", e);
         }
-        log.info("审计日志 - 用户:{}, 请求方式:{}, 地址:{}, 方法:{}",
+        log.info("审计日志 - 用户:{}, 请求方式:{}, 地址:{}, 方法:{}, 结果:{}",
                 userId,
                 request.getMethod(),
                 request.getRequestURI(),
-                joinPoint.getSignature().toShortString());
+                joinPoint.getSignature().toShortString(),
+                outcome);
+    }
+
+    /** 取当前用户；拿不到时按 null 记（匿名接口如登录/注册）。 */
+    private Long userId() {
+        try {
+            return UserContext.get();
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

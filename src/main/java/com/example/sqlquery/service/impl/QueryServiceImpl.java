@@ -7,6 +7,7 @@ import com.example.sqlquery.service.SqlPermissionService;
 import com.example.sqlquery.util.SqlType;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.exception.BusinessException;
+import com.example.sqlquery.exception.RejectedBeforeWorkException;
 import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.service.QueryHistoryService;
@@ -81,7 +82,11 @@ public class QueryServiceImpl implements QueryService {
         QueryConcurrencyGuard.RejectReason rejectReason =
                 concurrencyGuard.tryAcquire(dto.getDataSourceId(), userId);
         if (rejectReason != QueryConcurrencyGuard.RejectReason.NONE) {
-            throw new BusinessException(concurrencyGuard.rejectionMessage(rejectReason));
+            // ⭐ 用 RejectedBeforeWorkException 而不是裸的 BusinessException：
+            //    这个请求**一个资源都没碰到**，所以审计切面不该为它往主库写一条记录
+            //    （见 AuditLogAspect 与类注释里那段压测数据）。
+            //    对用户的表现完全不变：文案、HTTP 状态、业务 code 都一样。
+            throw new RejectedBeforeWorkException(concurrencyGuard.rejectionMessage(rejectReason));
         }
 
         try {
@@ -91,7 +96,10 @@ public class QueryServiceImpl implements QueryService {
             // **不算"用户写错 SQL"** —— 否则用户连续写错 5 次 SQL 就能把整个数据源熔断，
             // 别人也用不了了。判断逻辑在 DbSourceCircuitBreaker 里。
             if (!circuitBreaker.allowRequest(dto.getDataSourceId())) {
-                throw new BusinessException("该数据源最近连续连接失败，已暂时熔断，请稍后重试");
+                // 同理：熔断拒绝也**没有真的去连数据库**（那正是熔断的意义），
+                // 所以不该产生一条审计写 —— 这也是同一个类型存在的原因。
+                throw new RejectedBeforeWorkException(
+                        "该数据源最近连续连接失败，已暂时熔断，请稍后重试");
             }
 
             QueryVO vo = doExecuteWithGuard(userId, dto);

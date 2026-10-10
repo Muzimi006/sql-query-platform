@@ -22,6 +22,39 @@
 		     本地想跑集成测试：mvn test -Dgroups=integration -Dsurefire.excludedGroups= -->
 		<surefire.excludedGroups>integration</surefire.excludedGroups>
 	</properties>
+	<!--
+	  依赖版本管理。
+
+	  ⚠️ 覆盖 Spring Boot 受管版本的**正确位置是这里，不是直接依赖上的 <version>**：
+	  写在直接依赖上时，Boot 通过 starter 传进来的那个版本仍然在依赖树里，
+	  于是一棵树里出现两个版本 —— maven-enforcer 的 dependencyConvergence 会直接失败
+	  （这条规则是有价值的：同名不同版本的类在运行时表现为诡异的 NoSuchMethodError）。
+	  写进 dependencyManagement 之后，受管版本会把**所有**路径（含传递依赖）都收敛到同一个。
+	-->
+	<dependencyManagement>
+		<dependencies>
+			<!-- 覆盖 Spring Boot 4.1.0 管理的 amqp-client 版本（Boot 管理的是 5.30.0）。
+
+			     ⚠️ 这里**缺一句原因**，而这是一个真实的风险、不是形式主义：
+			     覆盖受管版本却不写原因，下一个人（包括半年后的自己）就不知道它能不能动 ——
+			     升级 Boot 时只能在「不敢碰」和「赌一把删掉」之间二选一，两种都不是工程决策。
+
+			     需要作者补写的内容（三条里挑一条并附证据）：
+			     ① 安全修复：哪个 CVE、影响什么；
+			     ② 功能修复：哪个 issue / 什么表现、本项目是否真的遇到过；
+			     ③ 只是跟着升级：那就应该删掉这个覆盖，交回 Boot 管理。
+
+			     在那之前，这个覆盖由 maven-enforcer 的 dependencyConvergence 保证
+			     **只影响版本、不产生同名多版本**（这也是它被放进 dependencyManagement
+			     而不是直接依赖上的原因）。 -->
+			<dependency>
+				<groupId>com.rabbitmq</groupId>
+				<artifactId>amqp-client</artifactId>
+				<version>5.35.0</version>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
+
 	<dependencies>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -118,12 +151,11 @@
 			<artifactId>jackson-datatype-jsr310</artifactId>
 		</dependency>
 
-		<!-- 显式覆盖 Spring Boot 4.1.0 管理的 amqp-client 版本（Boot 管理的是 5.30.0）。
-		     注意：覆盖受管版本一定要写原因，否则下次升级 Boot 时没人知道这里为什么不一样。 -->
+		<!-- amqp-client 的版本在下面的 <dependencyManagement> 里统一覆盖（5.35.0），
+		     这里刻意不写版本 —— 见那边的原因说明。 -->
 		<dependency>
 			<groupId>com.rabbitmq</groupId>
 			<artifactId>amqp-client</artifactId>
-			<version>5.35.0</version>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -158,6 +190,42 @@
 
 	<build>
 		<plugins>
+			<!--
+			  Maven Enforcer：把「这个项目需要什么环境」变成构建时就会失败的检查。
+			
+			  ⚠️ 为什么值得加：没有它的时候，用错 JDK / 用错 Maven 版本、
+			  或者某个依赖树里出现两个版本的同名类，都只会在**运行到某一步**才以
+			  「ClassNotFound / NoSuchMethodError / 行为诡异」的形式暴露 ——
+			  而那时候没人会想到根因是构建环境。
+
+			  requireJavaVersion 取 [17,)：与 pom 里的 java.version 一致，
+			  但不写死上界 —— 用更高版本 JDK 编译应当被允许（实测 17 通过）。
+			  dependencyConvergence 是这里面最有价值的一条：它要求同一个 artifact
+			  在整棵依赖树里只能收敛到一个版本（详见 docs/开发规范.md）。
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-enforcer-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>enforce-build-environment</id>
+						<goals>
+							<goal>enforce</goal>
+						</goals>
+						<configuration>
+							<rules>
+								<requireJavaVersion>
+									<version>[17,)</version>
+								</requireJavaVersion>
+								<requireMavenVersion>
+									<version>[3.9,)</version>
+								</requireMavenVersion>
+								<dependencyConvergence/>
+							</rules>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>

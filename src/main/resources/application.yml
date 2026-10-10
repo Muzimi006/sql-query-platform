@@ -97,7 +97,12 @@ management:
     # 需要跨机抓取时把 address 改成内网地址，并在前面放一层带鉴权的网关，
     # 而不是把它直接挂到公网。
     port: ${MANAGEMENT_PORT:8081}
-    address: 127.0.0.1
+    # ⚠️ 默认只监听本机（安全决定）；**容器 / K8s 里探针从 Pod 外访问时必须放开**：
+    #    设成 0.0.0.0 并把端口只暴露给集群内网，前面放一层带鉴权的网关，
+    #    而不是把它挂到公网（/actuator 里有 health/metrics/prometheus）。
+    #    写成可配而不是写死，是因为「要不要放开」由部署形态决定 ——
+    #    写死 127.0.0.1 时 K8s 的 httpGet 探针会一直失败，而日志里看不出原因。
+    address: ${MANAGEMENT_ADDRESS:127.0.0.1}
   endpoints:
     web:
       exposure:

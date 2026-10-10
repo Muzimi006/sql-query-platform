@@ -1,0 +1,33 @@
+# EditorConfig：https://editorconfig.org
+#
+# 它解决的是「编辑器默认值各不相同」这件事：同一个仓库，
+# IDEA 默认缩进 4、VS Code 默认 4、有人开了 tab，diff 里就会出现成片的空白变化。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml,json,html,vue,js,ts,css}]
+indent_size = 2
+
+[*.md]
+# Markdown 里「行尾两个空格 = 换行」，不能去掉
+trim_trailing_whitespace = false
+
+[*.{cmd,bat}]
+end_of_line = crlf
+
+[Makefile]
+indent_style = tab
+
+# 生成物与依赖目录不参与格式化
+[{target,node_modules,dist}/**]
+indent_style = unset
+indent_size = unset
+insert_final_newline = unset
+

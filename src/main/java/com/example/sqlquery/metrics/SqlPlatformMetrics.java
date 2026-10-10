@@ -454,6 +454,22 @@ public class SqlPlatformMetrics {
      */
     public static final String AUDIT_WRITE_FAILED = "audit.write.failed";
 
+    /**
+     * **没有写**审计日志的次数，按原因分标签（不是失败，是有意不写）。
+     *
+     * <p>它补的是 G-07：被并发闸门 / 熔断拒绝的请求**一个资源都没碰到**，
+     * 却因为审计切面是 {@code @Before} 而往主库插了一条记录 ——
+     * 压测实测的后果是负向扩展（并发 8 → 64 时成功吞吐 296.5 → 87.5 QPS）。
+     *
+     * <p>⚠️ 「不写」必须留计数：否则「审计少了一条」和「这次请求本来就没做事」
+     * 在指标上完全一样，事后无法分辨。
+     */
+    public static final String AUDIT_SKIPPED = "audit.skipped";
+
+    public void recordAuditSkipped(String reason) {
+        registry.counter(AUDIT_SKIPPED, TAG_REASON, reason).increment();
+    }
+
     public void recordAuditWriteFailed() {
         registry.counter(AUDIT_WRITE_FAILED).increment();
     }

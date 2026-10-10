@@ -1,0 +1,29 @@
+# .dockerignore：把构建上下文压到最小。
+#
+# ⚠️ 两个后果值得记住：
+#   ① 上下文越小构建越快（node_modules / target 全传一遍能到几百 MB）；
+#   ② COPY 是按上下文里的内容工作的 —— 不小心把 .env / 密钥文件传进去，
+#      它们就会进镜像层，而**镜像层是删不掉的**（每一层都还在）。
+
+.git
+.github
+.idea
+.mvn
+.browser-e2e
+.fsync
+.loadtest
+.multiinstance*
+
+# target 里的东西除了那个 jar 都不需要
+target/*
+!target/*.jar
+
+frontend/node_modules
+frontend/dist
+docs
+sql
+exports
+*.md
+HELP.md
+docker-compose.yml
+

@@ -24,5 +24,10 @@ jobs:
       # 单元测试不依赖 MySQL / Redis / RabbitMQ；
       # 需要中间件的用例打了 integration 标签，由 surefire 默认排除。
       # 本地执行集成测试：docker compose up -d && mvn test -Dgroups=integration
-      - name: 编译并运行单元测试
-        run: mvn -B test
+      #
+      # ⚠️ 用 verify 而不是 test：verify 会一并跑 maven-enforcer 的检查
+      #    （JDK / Maven 版本、依赖收敛）。这类问题在本地往往「能跑」，
+      #    只在换机器或升级依赖时才以诡异的 NoSuchMethodError 暴露出来。
+      #    --no-transfer-progress：让 CI 日志里只剩有意义的部分。
+      - name: 编译并运行单元测试（含构建环境检查）
+        run: mvn -B --no-transfer-progress verify

@@ -1,2 +1,30 @@
+# 统一行尾：仓库里一律存 LF，检出到工作区时由 git 按平台转换。
+#
+# ⚠️ 这一行的意义：不写它时，Windows 上检出的是 CRLF、提交回去也可能带着 CRLF，
+#    git 会一直提示 LF will be replaced by CRLF，diff 里还会混进整文件的行尾变化。
+* text=auto eol=lf
+
+# 必须在 shell / 容器里执行的脚本：一律 LF，否则 Linux 上是 bad interpreter
 /mvnw text eol=lf
+*.sh text eol=lf
+
+# Windows 批处理必须是 CRLF
 *.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 二进制：不做行尾转换，也不让 git 试图合并
+*.jar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.xlsx binary
+*.zip binary
+
+# 生成物：进 diff 没有价值
+target/** -diff
+frontend/dist/** -diff
+exports/** -diff
+
