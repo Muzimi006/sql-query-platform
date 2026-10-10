@@ -201,14 +201,20 @@ public class ExportConsumer {
                         //       这时我们 ack 掉它 —— 任务只能等补偿任务判失败（默认 10 分钟）。
                         //       这是**真实的一次"消息被静默丢弃"**，必须留下痕迹。
                         warnIfRedeliveredInFlight(taskId);
-                        channel.basicAck(deliveryTag, false);
+                        ack(channel, deliveryTag);
                         return;
                     }
                     claimed = true;
                 }
 
                 execute(taskId);
-                channel.basicAck(deliveryTag, false);
+                // ⚠️ 这一句必须在 try **外面**（或者像这里一样用一个不抛异常的封装）。
+                //    放在 try 里被下面那个 catch 接住过一次真实的错：ack 抛 IOException
+                //    （channel 已坏 / 连接刚断）会被当成「执行失败」，于是重跑一遍导出，
+                //    最后一次尝试还会把它 nack 进死信队列 —— **而任务其实是成功的**。
+                //    现在 ack 失败只记 mq.ack.failed：消息没被确认，Broker 自然会重投，
+                //    重投又被幂等认领挡住。这才是它的正确恢复路径。
+                ack(channel, deliveryTag);
                 return;
             } catch (Exception e) {
                 if (attempt >= maxAttempts) {
@@ -217,7 +223,7 @@ public class ExportConsumer {
                     // requeue=false：进死信交换机。
                     // 用 true 重投的话，如果是持续性故障（数据库连不上），
                     // 消息会在队列里无限打转，把 CPU 和日志一起打满。
-                    channel.basicNack(deliveryTag, false, false);
+                    nackToDlq(channel, deliveryTag);
                     return;
                 }
 
@@ -231,10 +237,46 @@ public class ExportConsumer {
                     Thread.currentThread().interrupt();
                     log.error("重试等待被中断，投递到死信队列。taskId={}, dlq={}",
                             taskId, RabbitConfig.EXPORT_DLQ);
-                    channel.basicNack(deliveryTag, false, false);
+                    nackToDlq(channel, deliveryTag);
                     return;
                 }
             }
+        }
+    }
+
+    /**
+     * 确认消息。⚠️ <b>它绝不抛异常</b>，也绝不能被业务逻辑的 catch 接住。
+     *
+     * <p>曾经的写法是把 {@code channel.basicAck(...)} 直接写在 try 块里：
+     * ack 抛 {@code IOException}（channel 已坏、连接刚断）时会走进「执行失败」的分支 ——
+     * <b>一次已经成功的导出被当成失败</b>：重跑一遍 SQL，最后一次尝试还会 nack 进死信队列。
+     * 于是死信队列里躺着一条「处理失败」的记录，而数据库里那条任务是 SUCCESS。
+     *
+     * <p>ack 失败的正确恢复路径是<b>让 Broker 重投</b>（没被确认的消息在 channel 关闭后会回到队列），
+     * 而重投会被 {@link #tryClaim} 的幂等条件更新挡住，不会重复执行。
+     * 所以这里只记一个计数器 + 一条 WARN，什么都不改。
+     */
+    private void ack(Channel channel, long deliveryTag) {
+        try {
+            channel.basicAck(deliveryTag, false);
+        } catch (Exception e) {
+            metrics.recordAckFailed(SqlPlatformMetrics.LINK_EXPORT);
+            log.warn("确认消息失败（channel 已坏？）。这不算业务失败：消息未被确认时 Broker 会重投，"
+                    + "重投会被幂等认领挡住。deliveryTag={}", deliveryTag, e);
+        }
+    }
+
+    /**
+     * 把消息送进死信队列。同样吞掉异常 —— nack 失败时 channel 已经坏了，
+     * 消息会在 channel 关闭后回到队列重投，而重投走的是同一条幂等路径。
+     */
+    private void nackToDlq(Channel channel, long deliveryTag) {
+        try {
+            channel.basicNack(deliveryTag, false, false);
+        } catch (Exception e) {
+            metrics.recordAckFailed(SqlPlatformMetrics.LINK_EXPORT);
+            log.warn("投递到死信队列失败（channel 已坏？）。消息会在 channel 关闭后重投。deliveryTag={}",
+                    deliveryTag, e);
         }
     }
 

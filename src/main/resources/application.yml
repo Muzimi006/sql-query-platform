@@ -347,6 +347,13 @@ export:
   # 而磁盘写满影响的是整台机器上的所有服务。
   max-rows: 100000
 
+  # 创建导出任务时最多等多久拿 Broker 的投递确认（毫秒）。
+  # ⚠️ 必须等：队列满时（x-overflow=reject-publish-dlx）Broker 是**异步否定确认**，
+  #    convertAndSend 不会抛异常 —— 不等就会把「被拒收」当成投递成功，
+  #    留下一条永远 PENDING 的孤儿行，而用户当场看到的是「导出成功」。
+  #    等不到就按失败处理：立刻把任务标 FAILED 并让用户重试（导出是只读 SQL，重发起无害）。
+  publish-confirm-timeout-ms: 3000
+
   # 单条导出 SQL 的执行超时（秒）。
   # 比查询链路的 30 秒宽（导出还要往磁盘写），但必须有 ——
   # 导出连接来自和查询共用的连接池（上限 5），一条挂住的慢 SQL 会把池子慢慢占满。
@@ -411,6 +418,12 @@ review:
   stuck-executing-minutes: 15
 
   recovery-cron: "0 */5 * * * ?"
+
+  # 补偿重投时最多等多久拿 Broker 的投递确认（毫秒）。
+  # ⚠️ 必须等：队列满时（x-overflow=reject-publish-dlx）Broker 是**异步否定确认**，
+  #    convertAndSend 照样平静返回 —— 不等就会把「投递失败」当成成功，
+  #    于是 updated_at 被推到现在，重投被一轮轮推迟，最坏拖到放弃时限。
+  recovery-publish-confirm-timeout-ms: 5000
 
   # 是否允许审批自己提交的工单。默认不允许。
   #

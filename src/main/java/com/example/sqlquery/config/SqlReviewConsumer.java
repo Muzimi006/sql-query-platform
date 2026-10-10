@@ -110,19 +110,60 @@ public class SqlReviewConsumer {
                 // 重复投递 / 已经执行过 / 已经被驳回。
                 // MQ 是「至少一次」投递，同一条消息出现两次是正常情况，不是异常。
                 log.info("工单不处于可执行状态，跳过本次投递（幂等保护）。reviewId={}", reviewId);
-                channel.basicAck(deliveryTag, false);
+                ack(channel, deliveryTag);
                 return;
             }
 
             execute(reviewId);
-            channel.basicAck(deliveryTag, false);
+            // ⚠️ 这一句**绝不能**被下面那个 catch 接住。见 {@link #ack} 的说明：
+            //    这条链路上执行的是一条**写语句**，把 ack 的 IOException 当成执行失败，
+            //    会让一次**已经生效**的改动被谎报成「未落库」—— 死信队列里躺着它，
+            //    而工单状态其实是 EXECUTED、留痕也写成功了，人工排查会被带偏。
+            ack(channel, deliveryTag);
         } catch (Exception e) {
             log.error("工单执行结果未能落库，投递到死信队列。reviewId={}, dlq={}",
                     reviewId, RabbitConfig.REVIEW_DLQ, e);
             // requeue=false：进死信队列等人工处理。
             // 用 true 的话，如果是持续性故障，消息会在队列里无限打转。
             // ⚠️ 这里**更不能**靠重新入队来「重试执行」—— 见类注释第二节。
+            nackToDlq(channel, deliveryTag);
+        }
+    }
+
+    /**
+     * 确认消息。⚠️ <b>它绝不抛异常</b> —— 理由在下面，这一条比导出链路更要紧。
+     *
+     * <p>以前的写法是把 {@code channel.basicAck(...)} 直接写在 try 块里。
+     * 于是 ack 抛 {@code IOException}（channel 已坏 / 连接刚断）时，异常被同一个 catch 接住 →
+     * 进入「结果未能落库，投递到死信队列」分支 ——
+     * <b>而那条 UPDATE 其实已经提交、留痕也已经写好了。</b>
+     *
+     * <p>后果不是数据错，而是<b>一句话说错了</b>：死信队列里出现一条「工单执行失败」，
+     * 巡检告警跟着响，人去核对时发现工单是 EXECUTED、前镜像也在 ——
+     * 排查方向从一开始就是错的。
+     *
+     * <p>ack 失败的正确恢复路径是<b>让 Broker 重投</b>；重投会被 {@link #tryClaim} 挡住
+     * （状态已经不是 APPROVED 了），于是这条消息被安全地 ack 掉。
+     * 换句话说：<b>ack 失败不会导致重复执行，也不需要任何人来处理。</b>
+     */
+    private void ack(Channel channel, long deliveryTag) {
+        try {
+            channel.basicAck(deliveryTag, false);
+        } catch (Exception e) {
+            metrics.recordAckFailed(SqlPlatformMetrics.LINK_REVIEW);
+            log.warn("确认消息失败（channel 已坏？）。这不算执行失败：语句已经提交、留痕已经写完，"
+                    + "消息会在 channel 关闭后重投并被幂等认领挡住。deliveryTag={}", deliveryTag, e);
+        }
+    }
+
+    /** 把消息送进死信队列；nack 自身失败时不外抛（channel 已坏，重投走同一条幂等路径）。 */
+    private void nackToDlq(Channel channel, long deliveryTag) {
+        try {
             channel.basicNack(deliveryTag, false, false);
+        } catch (Exception e) {
+            metrics.recordAckFailed(SqlPlatformMetrics.LINK_REVIEW);
+            log.warn("投递到死信队列失败（channel 已坏？）。消息会在 channel 关闭后重投。deliveryTag={}",
+                    deliveryTag, e);
         }
     }
 

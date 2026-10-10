@@ -14,11 +14,14 @@ import com.example.sqlquery.mapper.ExportTaskMapper;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.service.ExportService;
 import com.example.sqlquery.util.SqlType;
+import com.example.sqlquery.util.RabbitPublishConfirmer;
 import com.example.sqlquery.util.SqlValidateUtil;
 import com.example.sqlquery.vo.ExportTaskVO;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -31,22 +34,35 @@ import java.util.stream.Collectors;
 @Service
 public class ExportServiceImpl implements ExportService {
 
+    /**
+     * 等投递确认最多等多久（毫秒）。
+     *
+     * <p>正常情况下是毫秒级；给 3 秒是为了容忍 Broker 抖动。
+     * <b>等不到就按「没送出去」处理</b>：把任务标失败并告诉用户重试，
+     * 而不是留下一条没人管的 PENDING 孤儿行。
+     */
+    @Value("${export.publish-confirm-timeout-ms:3000}")
+    private long publishConfirmTimeoutMs;
+
     private final ExportTaskMapper exportTaskMapper;
     private final DbSourceService dbSourceService;
     private final RabbitTemplate rabbitTemplate;
     private final SqlPermissionService sqlPermissionService;
     private final SqlPlatformMetrics metrics;
+    private final RabbitPublishConfirmer publishConfirmer;
 
     public ExportServiceImpl(ExportTaskMapper exportTaskMapper,
                              DbSourceService dbSourceService,
                              RabbitTemplate rabbitTemplate,
                              SqlPermissionService sqlPermissionService,
-                             SqlPlatformMetrics metrics) {
+                             SqlPlatformMetrics metrics,
+                             RabbitPublishConfirmer publishConfirmer) {
         this.exportTaskMapper = exportTaskMapper;
         this.dbSourceService = dbSourceService;
         this.rabbitTemplate = rabbitTemplate;
         this.sqlPermissionService = sqlPermissionService;
         this.metrics = metrics;
+        this.publishConfirmer = publishConfirmer;
     }
 
     @Override
@@ -78,10 +94,19 @@ public class ExportServiceImpl implements ExportService {
         // 带上 CorrelationData：开启 publisher confirm 后，Broker 的确认/否定
         // 是通过这个对象的 id 回调回来的。不带的话只知道"有一条消息没送到"，
         // 却不知道该把哪条任务标记成失败（见 RabbitConfirmConfig）。
+        CorrelationData correlationData = new CorrelationData("export-" + task.getId());
+
         try {
-            rabbitTemplate.convertAndSend(RabbitConfig.EXPORT_QUEUE, task.getId(),
-                    // ⚠️ 前缀不能省：确认回调要靠它分辨「是哪条链路的消息没送到」
-                    new CorrelationData("export-" + task.getId()));
+            rabbitTemplate.convertAndSend(RabbitConfig.EXPORT_QUEUE, task.getId(), correlationData);
+
+            // ⭐⭐ 光「没抛异常」不等于投递成功 —— 队列满时（x-overflow=reject-publish-dlx）
+            //    Broker 是**异步否定确认**，convertAndSend 照样平静返回。
+            //    以前这里只有下面那个 catch，于是「队列满」这类拒绝完全走不到它：
+            //    任务留在 PENDING 等 10 分钟被补偿任务判失败，而用户当场看到的是「导出成功」。
+            if (!publishConfirmer.awaitConfirmed(correlationData, publishConfirmTimeoutMs,
+                    SqlPlatformMetrics.LINK_EXPORT)) {
+                throw new AmqpException("导出任务未能取得 Broker 确认（队列满 / Broker 抖动）");
+            }
         } catch (Exception e) {
             // ⚠️ 投递失败时必须**立刻把任务标掉**，否则会留下一条永远 PENDING 的孤儿行：
             //    它既不会被执行，也要等 10 分钟才被补偿任务判失败，而用户当场看到的是

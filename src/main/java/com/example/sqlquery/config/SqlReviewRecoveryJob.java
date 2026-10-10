@@ -8,6 +8,7 @@ import com.example.sqlquery.common.ReviewStatus;
 import com.example.sqlquery.entity.SqlReviewRequest;
 import com.example.sqlquery.mapper.SqlReviewRequestMapper;
 import com.example.sqlquery.metrics.SqlPlatformMetrics;
+import com.example.sqlquery.util.RabbitPublishConfirmer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
@@ -113,16 +114,29 @@ public class SqlReviewRecoveryJob {
     @Value("${review.stuck-executing-minutes:15}")
     private int stuckExecutingMinutes;
 
+    /**
+     * 等这条重投消息的确认最多等多久。
+     *
+     * <p>正常情况下确认在毫秒级回来；给 5 秒是为了容忍 Broker 抖动。
+     * <b>等不到就按「没送出去」处理</b>（不刷新 updated_at、下一轮再投），理由见
+     * {@link com.example.sqlquery.util.RabbitPublishConfirmer} 的类注释。
+     */
+    @Value("${review.recovery-publish-confirm-timeout-ms:5000}")
+    private long publishConfirmTimeoutMs;
+
     private final SqlReviewRequestMapper reviewMapper;
     private final RabbitTemplate rabbitTemplate;
     private final SqlPlatformMetrics metrics;
+    private final RabbitPublishConfirmer publishConfirmer;
 
     public SqlReviewRecoveryJob(SqlReviewRequestMapper reviewMapper,
                                 RabbitTemplate rabbitTemplate,
-                                SqlPlatformMetrics metrics) {
+                                SqlPlatformMetrics metrics,
+                                RabbitPublishConfirmer publishConfirmer) {
         this.reviewMapper = reviewMapper;
         this.rabbitTemplate = rabbitTemplate;
         this.metrics = metrics;
+        this.publishConfirmer = publishConfirmer;
     }
 
     /** 默认每 5 分钟扫一次。 */
@@ -180,14 +194,28 @@ public class SqlReviewRecoveryJob {
             return;
         }
 
+        CorrelationData correlationData = new CorrelationData("review-retry-" + request.getId());
+
         try {
-            rabbitTemplate.convertAndSend(RabbitConfig.REVIEW_QUEUE, request.getId(),
-                    new CorrelationData("review-retry-" + request.getId()));
+            rabbitTemplate.convertAndSend(RabbitConfig.REVIEW_QUEUE, request.getId(), correlationData);
         } catch (AmqpException e) {
             // 投递都没成功，就不要动 updated_at —— 下一轮早点重试更好。
             // 包一层只是为了让上面的日志能区分「投递失败」和「意外异常」；
             // 真正的重试是下一轮定时任务，不在这里就地重试。
             throw e;
+        }
+
+        // ⭐⭐ 还必须**等到 Broker 的确认**才算投递成功。
+        //
+        // 为什么：队列满了以后（本项目配的是 x-overflow=reject-publish-dlx），
+        // Broker 的做法是**异步否定确认**，而不是让 convertAndSend 抛异常 ——
+        // 也就是说：投递其实失败了，上面那一行却照样平静返回。
+        // 以前这里就直接往下走、把 updated_at 推到了现在，于是
+        // **下一轮扫描会认为这条工单刚被处理过**，重投被推迟一轮又一轮，
+        // 最坏情况是一直拖到 24 小时的放弃时限 —— 而真正的原因只是队列曾经满过。
+        if (!publishConfirmer.awaitConfirmed(correlationData, publishConfirmTimeoutMs,
+                SqlPlatformMetrics.LINK_REVIEW)) {
+            throw new AmqpException("重投未能取得 Broker 确认（队列满 / Broker 抖动），本轮不刷新 updated_at");
         }
 
         // ⭐⭐ 投递成功之后必须把 updated_at 推到现在，**否则重投会被无限放大**。

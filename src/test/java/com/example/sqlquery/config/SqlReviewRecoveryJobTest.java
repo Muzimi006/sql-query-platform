@@ -9,6 +9,7 @@ import com.example.sqlquery.common.ReviewStatus;
 import com.example.sqlquery.entity.SqlReviewRequest;
 import com.example.sqlquery.mapper.SqlReviewRequestMapper;
 import com.example.sqlquery.metrics.SqlPlatformMetrics;
+import com.example.sqlquery.util.RabbitPublishConfirmer;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -48,6 +49,7 @@ class SqlReviewRecoveryJobTest {
 
     private SqlReviewRequestMapper reviewMapper;
     private RabbitTemplate rabbitTemplate;
+    private RabbitPublishConfirmer publishConfirmer;
     private SqlReviewRecoveryJob job;
 
     @BeforeEach
@@ -57,12 +59,18 @@ class SqlReviewRecoveryJobTest {
 
         reviewMapper = Mockito.mock(SqlReviewRequestMapper.class);
         rabbitTemplate = Mockito.mock(RabbitTemplate.class);
+        // 默认：Broker 确认了这条消息。个别用例再改成 false（被拒 / 超时）
+        publishConfirmer = Mockito.mock(RabbitPublishConfirmer.class);
+        Mockito.when(publishConfirmer.awaitConfirmed(ArgumentMatchers.any(),
+                ArgumentMatchers.anyLong(), ArgumentMatchers.anyString())).thenReturn(true);
+
         job = new SqlReviewRecoveryJob(reviewMapper, rabbitTemplate,
-                Mockito.mock(SqlPlatformMetrics.class));
+                Mockito.mock(SqlPlatformMetrics.class), publishConfirmer);
 
         ReflectionTestUtils.setField(job, "stuckApprovedMinutes", 10);
         ReflectionTestUtils.setField(job, "stuckApprovedMaxHours", 24);
         ReflectionTestUtils.setField(job, "stuckExecutingMinutes", 15);
+        ReflectionTestUtils.setField(job, "publishConfirmTimeoutMs", 100L);
     }
 
     private SqlReviewRequest ticket(Long id, String status, LocalDateTime updatedAt) {
@@ -292,6 +300,29 @@ class SqlReviewRecoveryJobTest {
             assertFalse(wrapper.getSqlSegment().contains("created_at"),
                     "不能基于 created_at，实际：" + wrapper.getSqlSegment());
         }
+    }
+
+    @Test
+    @DisplayName("⭐ 投递未被确认时不许刷新 updated_at —— 否则重投会被一轮轮推迟")
+    void unconfirmedPublishMustNotRefreshUpdatedAt() {
+        stubPages(List.of(ticket(1L, ReviewStatus.APPROVED, LocalDateTime.now().minusMinutes(30))),
+                List.of());
+
+        // 队列满时 Broker 是**异步否定确认**：convertAndSend 照样平静返回，
+        // 但消息其实没进队列。这时如果照样刷新 updated_at，
+        // selectStuck 的筛选条件（updated_at < now - 10 分钟）就会认为
+        // 这条工单「刚被处理过」，重投被推迟一轮又一轮，最坏拖到 24 小时的放弃时限。
+        Mockito.when(publishConfirmer.awaitConfirmed(ArgumentMatchers.any(),
+                ArgumentMatchers.anyLong(), ArgumentMatchers.anyString())).thenReturn(false);
+
+        job.recover();
+
+        Mockito.verify(rabbitTemplate).convertAndSend(
+                ArgumentMatchers.eq(RabbitConfig.REVIEW_QUEUE),
+                ArgumentMatchers.eq(1L),
+                ArgumentMatchers.any(CorrelationData.class));
+        Mockito.verify(reviewMapper, Mockito.never())
+                .update(ArgumentMatchers.isNull(), ArgumentMatchers.<Wrapper<SqlReviewRequest>>any());
     }
 
     @Test

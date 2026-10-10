@@ -359,6 +359,33 @@ class SqlReviewConsumerTest {
     }
 
     @Test
+    @DisplayName("⭐ ack 自己抛异常 ≠ 执行失败：写语句已经提交，不许谎报成「未落库」")
+    void ackFailureMustNotBeReportedAsExecutionFailure() throws Exception {
+        // 这条链路上跑的是一条**写语句**，所以这一条比导出侧更要紧：
+        // ack 抛 IOException 被当成执行失败时，死信队列里会出现一条
+        // 「工单执行失败、结果未能落库」，而工单状态其实是 EXECUTED、留痕也写成功了 ——
+        // 数据没错，错的是那句话，而排查方向会从一开始就被带偏。
+        Mockito.when(reviewMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.any()))
+                .thenReturn(1);
+        Mockito.when(reviewMapper.selectById(1L))
+                .thenReturn(ticket("UPDATE t_user SET nickname = 'n' WHERE id = 1"));
+
+        com.rabbitmq.client.Channel channel = Mockito.mock(com.rabbitmq.client.Channel.class);
+        Mockito.doThrow(new java.io.IOException("channel 已坏"))
+                .when(channel).basicAck(42L, false);
+
+        consumer.handle(1L, channel, 42L);
+
+        // 语句只执行一次：ack 失败不构成「重跑一遍 UPDATE」的理由
+        Mockito.verify(undoRecorder, Mockito.times(1))
+                .executeWithUndo(ArgumentMatchers.any(), ArgumentMatchers.anyString());
+        // 绝不能把一次已经生效的改动 nack 成死信
+        Mockito.verify(channel, Mockito.never())
+                .basicNack(Mockito.anyLong(), Mockito.anyBoolean(), Mockito.anyBoolean());
+        Mockito.verify(metrics).recordAckFailed(SqlPlatformMetrics.LINK_REVIEW);
+    }
+
+    @Test
     @DisplayName("工单被删掉了：什么都不写，也不报错")
     void missingTicketShouldBeANoOp() {
         Mockito.when(reviewMapper.selectById(1L)).thenReturn(null);

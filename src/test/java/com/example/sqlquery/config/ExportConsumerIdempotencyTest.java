@@ -251,6 +251,39 @@ class ExportConsumerIdempotencyTest {
     }
 
     @Test
+    @DisplayName("⭐ ack 自己抛异常不算业务失败：不许重跑、更不许 nack 进死信")
+    void ackFailureMustNotBeTreatedAsProcessingFailure() throws Exception {
+        // 曾经的写法把 channel.basicAck(...) 直接放在 try 块里：
+        // ack 抛 IOException（channel 已坏 / 连接刚断）会被同一个 catch 接住，
+        // 于是走成「执行失败」—— 一次**已经成功**的导出被重跑，
+        // 最后一次尝试还会 nack 进死信队列，而数据库里那条任务是 SUCCESS。
+        Mockito.when(exportTaskMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.any()))
+                .thenReturn(1);
+        Mockito.when(exportTaskMapper.selectById(1L)).thenReturn(pendingTask(1L));
+        Mockito.when(dbSourceService.getEnabledByIdAndUserId(1L, 2L)).thenReturn(new DbSource());
+        Mockito.doAnswer(invocation -> {
+            File tmp = invocation.getArgument(2);
+            Files.writeString(tmp.toPath(), "v\n1\n");
+            return 0L;
+        }).when(consumer)
+                .generateCsv(ArgumentMatchers.any(), ArgumentMatchers.anyString(), ArgumentMatchers.any());
+
+        com.rabbitmq.client.Channel channel = Mockito.mock(com.rabbitmq.client.Channel.class);
+        Mockito.doThrow(new java.io.IOException("channel 已坏"))
+                .when(channel).basicAck(42L, false);
+
+        consumer.handle(1L, channel, 42L);
+
+        // 只跑一次：ack 失败不构成「重试」的理由
+        Mockito.verify(consumer, Mockito.times(1)).execute(1L);
+        // 而且**绝不能**把一次成功的执行 nack 成死信
+        Mockito.verify(channel, Mockito.never())
+                .basicNack(Mockito.anyLong(), Mockito.anyBoolean(), Mockito.anyBoolean());
+        // ack 失败必须留下痕迹（消息没被确认，Broker 会重投，重投被幂等认领挡住）
+        Mockito.verify(metrics).recordAckFailed(SqlPlatformMetrics.LINK_EXPORT);
+    }
+
+    @Test
     @DisplayName("⭐ 重试用尽：先退避重试，最后才 nack 进死信")
     void persistenceFailureShouldNackIntoDeadLetterQueue() throws Exception {
         // 第一次 update 是认领（成功），第二次是回写（失败）

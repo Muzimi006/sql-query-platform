@@ -285,6 +285,33 @@ public class SqlPlatformMetrics {
     /** 保留策略某一项失败的次数（查询或删除抛异常）。持续大于 0 = 表在无界增长。 */
     public static final String RETENTION_FAILED = "retention.failed";
 
+    /**
+     * 回执（ack / nack）**本身失败**的次数，按链路分标签。
+     *
+     * <p>为什么它必须单独计数：ack 失败以前会被消费者的 catch 当成「业务处理失败」，
+     * 于是<b>一次成功的执行被报成失败</b>（工单侧会 nack 进死信、导出侧会重跑一遍）。
+     * 现在 ack 失败只记这个计数器 —— 消息没被确认，Broker 自然会重投，
+     * 而重投由幂等认领挡住重复执行。<b>这才是它的正确恢复路径。</b>
+     */
+    public static final String ACK_FAILED = "mq.ack.failed";
+
+    public void recordAckFailed(String link) {
+        registry.counter(ACK_FAILED, TAG_LINK, link).increment();
+    }
+
+    /**
+     * 投递**没能拿到确认**的次数，按链路分标签（自己等确认的那几条路径记的）。
+     *
+     * <p>它和 {@link #PUBLISH_FAILED} 的分工：那个是<b>Broker 的否定确认回调</b>记的
+     * （消息确实被拒了），这个是<b>调用方等确认超时或拿到否定</b>时记的
+     * （我们自己的判断）。两者同时增长说明同一次投递既被拒又被我们发现，属正常。
+     */
+    public static final String PUBLISH_UNCONFIRMED = "mq.publish.unconfirmed";
+
+    public void recordPublishUnconfirmed(String link) {
+        registry.counter(PUBLISH_UNCONFIRMED, TAG_LINK, link).increment();
+    }
+
     public void recordRetentionFailed(String target) {
         registry.counter(RETENTION_FAILED, "target", target).increment();
     }
