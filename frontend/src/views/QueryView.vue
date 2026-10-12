@@ -540,7 +540,7 @@ onUnmounted(() => {
             </div>
 
             <div v-else-if="recentError" class="col">
-              <div class="small" style="color:var(--danger)">{{ recentError }}</div>
+              <div class="small text-danger">{{ recentError }}</div>
               <button class="btn btn-sm" @click="loadRecent"><AppIcon name="refresh" :size="14" />重试</button>
             </div>
 
@@ -571,7 +571,7 @@ onUnmounted(() => {
                       <div class="small break mt-1" :title="h.sqlText">{{ sqlSummary(h.sqlText, 60) }}</div>
                       <!-- 失败的记录把原因也带出来：不然用户点回填、再执行一次、
                            又失败，才知道上次也是这条 SQL 的问题 -->
-                      <div v-if="h.errorMessage" class="tiny mt-1" style="color:var(--danger)">
+                      <div v-if="h.errorMessage" class="tiny mt-1 text-danger">
                         {{ sqlSummary(h.errorMessage, 60) }}
                       </div>
                     </td>

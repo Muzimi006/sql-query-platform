@@ -317,8 +317,7 @@ onMounted(() => {
                 <td class="break">
                   <span
                     v-if="row.errorMessage"
-                    class="tiny"
-                    :style="{ color: 'var(--danger)' }"
+                    class="tiny text-danger"
                     :title="row.errorMessage"
                   >{{ clip(row.errorMessage) }}</span>
                   <span v-else class="muted-2">—</span>

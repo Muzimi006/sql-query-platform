@@ -429,6 +429,12 @@ kbd {
 .spacer { flex: 1; }
 .muted { color: var(--muted); }
 .muted-2 { color: var(--muted-2); }
+/* 语义色文本。⚠️ 没有这几个类时，各页面会用内联 style 写 color —— 那正是
+   「每个页面各写一遍」的开始，深色模式也容易漏。 */
+.text-danger { color: var(--danger); }
+.text-warn { color: var(--warn); }
+.text-ok { color: var(--ok); }
+.text-info { color: var(--info); }
 .small { font-size: 13px; }
 .tiny { font-size: 12px; }
 .strong { font-weight: 600; }

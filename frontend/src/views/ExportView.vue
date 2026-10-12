@@ -341,7 +341,7 @@ onUnmounted(stopPolling)
               <td class="num">{{ fmtNumber(task.rowCount) }}</td>
               <td class="break">
                 <template v-if="task.errorMessage">
-                  <div class="small err-text">{{ task.errorMessage }}</div>
+                  <div class="small text-danger">{{ task.errorMessage }}</div>
                   <div class="tiny muted-2">可点「重新创建」调整 SQL 后重试</div>
                 </template>
                 <span v-else class="muted-2">—</span>
@@ -384,7 +384,6 @@ onUnmounted(stopPolling)
 <style scoped>
 /* 失败原因可能是一整句后端文案（"导出结果超过 100000 行上限，请缩小查询范围…"），
    用错误色而不是普通正文色，扫一眼就能定位到出问题的行 */
-.err-text { color: var(--danger); }
 
 /* .spinner 默认 16px：放进 btn-sm 或 card-head 的 12px 小字里会把行高撑起来，
    看起来像"整行在抖"。这两处统一压到 12px */
