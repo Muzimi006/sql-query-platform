@@ -93,7 +93,7 @@ public class AuditLogAspect {
 
         try {
             Object result = joinPoint.proceed();
-            enqueue(userId(), request, joinPoint, "SUCCESS");
+            enqueue(currentUserId(), request, joinPoint, "SUCCESS");
             return result;
         } catch (RejectedBeforeWorkException e) {
             // ⭐ 这一条就是一个资源都没碰到就被拒的请求。
@@ -103,7 +103,7 @@ public class AuditLogAspect {
                     request.getRequestURI(), e.getMessage());
             throw e;
         } catch (Throwable t) {
-            enqueue(userId(), request, joinPoint, "FAILED:" + t.getClass().getSimpleName());
+            enqueue(currentUserId(), request, joinPoint, "FAILED:" + t.getClass().getSimpleName());
             throw t;
         } finally {
             // ⚠️ 必须在 finally 里收尾：成功、业务失败、被拒绝三条路径都要把缓冲清掉。
@@ -163,8 +163,15 @@ public class AuditLogAspect {
                 outcome);
     }
 
-    /** 取当前用户；拿不到时按 null 记（匿名接口如登录/注册）。 */
-    private Long userId() {
+    /**
+     * 取**当前请求**的用户 id；拿不到时按 {@code null} 记（匿名接口如登录 / 注册）。
+     *
+     * <p>命名说明：这个方法原来叫 {@code userId()} —— 读起来像一个字段访问器或者局部变量，
+     * 而它其实是"从 ThreadLocal 里把当前用户取出来"，**是有动作的**；
+     * 而且调用点写着 {@code enqueue(userId(), ...)}，和形参 {@code Long userId} 撞在一起，
+     * 一眼看去分不清哪个是"传进去的"、哪个是"现取的"。所以按 Java 惯例改成动词开头。
+     */
+    private Long currentUserId() {
         try {
             return UserContext.get();
         } catch (Exception e) {
