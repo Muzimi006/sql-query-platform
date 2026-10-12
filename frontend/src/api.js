@@ -52,7 +52,13 @@ export const dataSourceApi = {
   // 支持的数据库类型：前端下拉框读它渲染，避免前后端各维护一份清单
   dialects: () => http.get('/datasource/dialects'),
   list: () => http.get('/datasource'),
+  // 分页版列表。⚠️ 只有它是分页的，list() 会一次性把全部数据源拿回来 ——
+  // 数据源通常没几条，所以两个都留着：下拉框用 list()（要全量），管理页用 page()。
+  // ⚠️ 参数名是 `page` 而不是 `current`：DbSourceController#page 的形参就叫 page。
+  //    传错的表现是「翻页没反应，永远返回第一页」—— 后端有默认值，不会报错。
+  page: (page = 1, size = 10) => http.get('/datasource/page', { params: { page, size } }),
   add: (data) => http.post('/datasource', data),
+  update: (id, data) => http.put(`/datasource/${id}`, data),
   remove: (id) => http.delete(`/datasource/${id}`),
   changeStatus: (id, status) => http.put(`/datasource/${id}/status`, null, { params: { status } }),
   test: (data) => http.post('/datasource/test', data)
@@ -103,4 +109,54 @@ export const exportApi = {
   list: () => http.get('/export'),
   create: (data) => http.post('/export', data),
   download: downloadCsv
+}
+
+/* ---------------------------------------------------------------------------
+ * 审核工单
+ *
+ * ⚠️ 这一组接口有两处"看起来一样、其实不一样"，前端必须按它的语义用：
+ *
+ * 1. `approve` / `reject` 返回 200 **不代表已经执行完了** ——
+ *    批准之后是**异步执行**（审批 → 投 MQ → 消费者认领 → 执行 → 回写）。
+ *    正确用法是拿到 200 之后**轮询 detail(id)**，看 status 变成 EXECUTED / FAILED。
+ *
+ * 2. `requestToken` 是幂等键：双击提交、超时重试都靠它只产生一条工单。
+ *    但**同一次提交意图必须用同一个 token**；换了 SQL 却复用 token，后端会按
+ *    "载荷不一致"直接报错（这是有意的，见 SqlReviewServiceImpl）。
+ * ------------------------------------------------------------------------- */
+export const sqlReviewApi = {
+  submit: (data) => http.post('/sql-review/submit', data),
+  mine: (current = 1, size = 10) => http.get('/sql-review/mine', { params: { current, size } }),
+  // 仅 ADMIN：别人提交的待执行 SQL 属于敏感内容，后端按角色收口
+  pending: (current = 1, size = 10) => http.get('/sql-review/pending', { params: { current, size } }),
+  detail: (id) => http.get(`/sql-review/${id}`),
+  approve: (id, comment) => http.post(`/sql-review/${id}/approve`, { comment: comment || null }),
+  reject: (id, comment) => http.post(`/sql-review/${id}/reject`, { comment: comment || null })
+}
+
+/* ---------------------------------------------------------------------------
+ * 自然语言生成 SQL（NL2SQL）
+ *
+ * ⚠️ 它不是"自然语言查询"：模型生成的是 INSERT / UPDATE / DELETE，
+ *    并且**不会直接执行** —— 结果是一张待审工单（返回 SqlReviewRequestVO）。
+ *    如果模型给的是 SELECT，后端会把语句原样返回并提示"去查询页执行"。
+ *
+ * `status()` 用来决定入口要不要点亮（默认关闭；打开它意味着表结构会发往外部模型服务）。
+ * ------------------------------------------------------------------------- */
+export const nl2sqlApi = {
+  status: () => http.get('/nl2sql/status'),
+  ticket: (data) => http.post('/nl2sql/ticket', data)
+}
+
+export const historyApi = {
+  list: () => http.get('/history'),
+  page: (params) => http.get('/history/page', { params }),
+  remove: (id) => http.delete(`/history/${id}`),
+  clear: () => http.delete('/history')
+}
+
+export const favoriteApi = {
+  list: () => http.get('/favorite'),
+  add: (data) => http.post('/favorite', data),
+  remove: (id) => http.delete(`/favorite/${id}`)
 }
