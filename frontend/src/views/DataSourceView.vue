@@ -173,10 +173,14 @@ function validate(purpose = 'save') {
   if (!Number.isInteger(port) || port < 1 || port > 65535) return '端口必须是 1 ~ 65535 之间的整数'
   if (!f.username.trim()) return '请填写数据库账号'
   if (!f.password) {
+    // ⚠️ 两种用途的规则**不一样**，别合并：
+    //   · 测试连接：`/datasource/test` 收的是完整 DTO（含密码），服务端从不下发已保存的密码，
+    //     所以这里必须现场填；
+    //   · 保存（编辑）：后端支持「留空 = 不修改」（DbSourceDTO.password 已去掉 @NotBlank，
+    //     服务层留空时回填库里那条密文）—— 用户改个名字不该被逼着重输密码。
+    //   新增时仍然必填（服务层会拦，报「数据库密码不能为空」）。
     if (purpose === 'test') return '测试连接需要数据库密码：服务端从不下发已保存的密码'
-    return isEditing.value
-      ? '请填写数据库密码：后端更新接口当前要求密码必填（留空会被拒绝为「数据库密码不能为空」）'
-      : '请填写数据库密码'
+    if (!isEditing.value) return '请填写数据库密码'
   }
   return ''
 }
@@ -378,7 +382,7 @@ onMounted(async () => {
                 </td>
               </tr>
             </tbody>
-            <caption>密码以加密形式入库，任何出参都不会把它下发到前端；因此"测试连接"和"保存"都需要在现场填写密码。</caption>
+            <caption>密码以加密形式入库，任何出参都不会把它下发到前端。编辑时<strong>留空表示不修改密码</strong>；「测试连接」因为接口要完整 DTO，必须现场填写。</caption>
           </table>
         </div>
         <AppPager v-model:current="current" :total="total" :size="size" :disabled="loading" />
@@ -403,15 +407,14 @@ onMounted(async () => {
               <span>测试连接需要数据库密码：服务端从不下发已保存的密码（这是有意的），请先填上密码再点「测试连接」。</span>
             </div>
 
-            <!-- 约定的语义是「编辑时密码留空 = 不修改」，但后端 DbSourceDTO.password 带 @NotBlank，
-                 更新接口同样要求必填。不说清楚的话，用户会照着提示留空、然后收到一句看不懂的报错。
-                 testHint 时上面那条 alert-info 已经把"要填密码"讲清楚了，不重复堆两条提示 -->
-            <div v-if="isEditing && !form.password && !testHint" class="alert alert-warn">
-              <AppIcon name="warn" :size="16" />
+            <!-- 编辑时密码留空 = 不修改（后端服务层留空会回填库里那条密文）。
+                 这里只是把语义讲清楚 —— ⚠️ 但**测试连接**不适用：那个接口收完整 DTO，必须现场填密码，
+                 所以 testHint 为真时优先显示上面那条"请先填密码"。 -->
+            <div v-if="isEditing && !form.password && !testHint" class="alert alert-info">
+              <AppIcon name="info" :size="16" />
               <span>
-                编辑时密码留空表示<strong>不修改密码</strong>；但当前后端更新接口
-                （<code>DbSourceDTO.password</code> 带 <code>@NotBlank</code>）要求密码必填 ——
-                密码留空时无法保存，请把密码一起填上。
+                密码留空即<strong>不修改密码</strong>；要换密码就直接填新的。
+                （服务端从不下发原密码，所以这里没法回填。）
               </span>
             </div>
 
