@@ -51,7 +51,9 @@ class UserServiceImplTest {
         // 本类只验密码链路，角色策略用 mock：不配邀请码时它返回 USER
         AdminRegistrationPolicy policy = mock(AdminRegistrationPolicy.class);
         doReturn("USER").when(policy).resolveRole(any());
-        userService = spy(new UserServiceImpl(passwordEncoder, policy));
+        // 本类不验重哈希链路（那由 PasswordRehashOnLoginTest 覆盖），指标用一个真实注册表即可
+        userService = spy(new UserServiceImpl(passwordEncoder, policy,
+                new com.example.sqlquery.metrics.SqlPlatformMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry())));
     }
 
     @Test

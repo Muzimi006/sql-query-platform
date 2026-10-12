@@ -97,6 +97,13 @@ AST 里只剩一个干净的 `SELECT 1`。所以这一类只能回到原始字�
 ### 5. 密码与凭据
 
 - **用户密码**：BCrypt 哈希。仅引入 `spring-security-crypto`，不引入完整的 Spring Security 自动配置，避免为一个哈希函数引入整套过滤器链
+  - **成本因子（轮次）可配**：`platform.password.bcrypt-strength`（默认 **10**，即 2¹⁰ = 1024 次 key setup）。
+    改造前那一行是 `new BCryptPasswordEncoder()`（无参）——「我们用了多少轮」完全由库的默认值决定，代码里一个字都没写；
+    现在显式化，并在启动日志里打出生效值。允许范围 `[4, 16]`，越界会被夹住并打 WARN
+    （上限刻意不是 BCrypt 的 31：登录接口本身就是「故意很慢」的操作，调到 2²⁰ 以上等于给自己造一个 CPU 耗尽型拒绝服务）。
+  - ⚠️ **调高只影响新哈希**：BCrypt 的 cost 写在每条哈希串里（`$2a$10$…`），老哈希既不会失效、也不会自动升级。
+    升级发生在**用户下次登录成功那一刻**（渐进升级），进度看 `password_rehash_total{outcome="success"}`；
+    升级写库失败**不影响这次登录**（密码是对的），失败计数 `password_rehash_total{outcome="failed"}`。
 - **数据源密码**：**AES/GCM/NoPadding**，每次生成随机 12 字节 IV，密文格式为 `{密钥版本}:` + Base64(IV ‖ 密文 + 认证标签)
   - 相较 ECB：GCM 为认证加密，自带完整性校验；随机 IV 保证**相同明文不会产生相同密文**
   - 保留只读的 ECB 解密分支，用于存量数据迁移
@@ -468,7 +475,7 @@ exec 形式的 `ENTRYPOINT`（`SIGTERM` 直达 JVM，优雅停机才生效）。
 > 只写 `-Dgroups=integration` 的话，一条集成用例都不会跑，却会显示 BUILD SUCCESS。
 > 现在排除项已改成属性（`surefire.excludedGroups`），所以清空它就能放行。
 
-当前共 **409 个用例**：纯单元层 **368 个**（`mvn test`，不依赖任何中间件），
+当前共 **421 个用例**（59 个测试源文件）：纯单元层 **380 个**（`mvn test`，不依赖任何中间件），
 另外 **41 个**打了 `integration` 标签、默认不跑。集成用例覆盖：
 MyBatis-Plus 装配与分页、导出的幂等与卡单补偿、**真实 PostgreSQL 下的双方言行为**、
 写语句执行与角色权限、**审核工单的端到端链路**（提交 → 审批 → MQ → 执行 → 留痕）。

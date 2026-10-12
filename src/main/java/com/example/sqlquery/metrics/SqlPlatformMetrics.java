@@ -311,6 +311,26 @@ public class SqlPlatformMetrics {
     /** 被合并提交的写条数（按成败分）。 */
     public static final String WRITE_FLUSHED_ITEMS = "platform.write.flushed";
 
+    /**
+     * 登录时把老哈希升级到当前成本因子的次数（成功 / 失败）。
+     *
+     * <p>它回答一个很具体的问题：**「库里还有多少老哈希没升级完」**。
+     * 调高 `platform.password.bcrypt-strength` 之后，老哈希只会在用户**下次登录**时被升级，
+     * 所以升级是**渐进**的 —— 这两个计数器就是它的进度条。
+     *
+     * <p>⚠️ 失败计数尤其要看：升级失败不阻断登录（有意），
+     * 但「一直失败」意味着成本因子永远只对新用户生效。
+     */
+    public static final String PASSWORD_REHASH = "password.rehash";
+
+    public void recordPasswordRehashed() {
+        registry.counter(PASSWORD_REHASH, TAG_OUTCOME, OUTCOME_SUCCESS).increment();
+    }
+
+    public void recordPasswordRehashFailed() {
+        registry.counter(PASSWORD_REHASH, TAG_OUTCOME, OUTCOME_FAILED).increment();
+    }
+
     public void recordWriteFlush(int items, int succeeded) {
         registry.counter(WRITE_FLUSH).increment();
         registry.counter(WRITE_FLUSHED_ITEMS, TAG_OUTCOME, OUTCOME_SUCCESS).increment(succeeded);

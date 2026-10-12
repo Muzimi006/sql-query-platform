@@ -22,6 +22,10 @@
 - 可配置的业务库时区 `datasource.mysql.server-timezone`（默认 `Asia/Shanghai`，
   环境变量 `MYSQL_SERVER_TIMEZONE`）。此前该值写死在代码里。
 - NL2SQL 并发上限 `platform.llm.max-concurrent`（默认 4）+ `platform.llm.acquire-timeout-ms`（默认 2000）。
+- 登录密码的 **BCrypt 成本因子可配**：`platform.password.bcrypt-strength`（默认 `10` = 原默认值，
+  环境变量 `BCRYPT_STRENGTH`）。**此前没有这个配置项** —— 编码器是 `new BCryptPasswordEncoder()`，
+  轮次由库的默认值决定，代码和配置里都看不见。允许范围 `[4, 16]`，超出夹住 + WARN；
+  启动时把生效值打进日志。新增计数器 `password.rehash{outcome=success|failed}`。
 - 新增规范文件：`.editorconfig`、`.gitattributes`、`.dockerignore`、`docs/开发规范.md`、本文件。
 - Maven Enforcer：构建时校验 JDK ≥ 17、Maven ≥ 3.9、**依赖版本收敛**。
 
@@ -82,6 +86,12 @@
 ### 安全
 - 业务库连接串的时区参数做了字符白名单校验（含 `&` / `=` 的值一律忽略）——
   该值会被直接拼进 JDBC URL，一个 `&` 就能塞进任意驱动参数。
+- **老密码哈希改为「登录成功时渐进升级」**：BCrypt 的 cost 写在每条哈希串里，所以调高成本因子
+  既不会让老用户登录失败，也**不会**让他们的哈希自动升级 —— 唯一能拿到明文的时刻就是登录成功那一刻。
+  现在登录校验通过后比对 `upgradeEncoding(旧哈希)`，需要升级就把密码列**原地重算**；
+  升级走**条件更新**（`WHERE id=? AND password=<读到的旧哈希>`），避免并发登录 / 重置密码期间
+  把刚改好的新密码覆盖回旧的；**升级失败不影响登录**（只记 `password.rehash{outcome=failed}` + WARN）。
+  ⚠️ 边界：只升级 cost，**不换算法**（`$2a$`/`$2b$`/`$2y$` 前缀差异未处理）。
 
 ## 版本说明
 
