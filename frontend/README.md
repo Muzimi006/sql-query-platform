@@ -34,6 +34,26 @@ npm run preview   # 本地预览构建产物
 它存在的理由很实际：前端**刻意零 UI 依赖**（没有 Element Plus、没有图标库），所有样式都集中在 `src/style.css`，
 所以「有哪些类名可用、状态标签怎么显示」必须有一个唯一出处，否则同一个按钮迟早出现三种写法。
 
+## 两个自带的验证脚本（都不需要装依赖）
+
+```bash
+cd frontend
+
+# ① 静态校验：不构建、不起服务，只解析 .vue（语法 / 模板变量拼错 / 组件漏引）
+node scripts/check-sfc.cjs                    # 检查 src 下全部 .vue
+node scripts/check-sfc.cjs src/views/X.vue    # 只检查指定文件（可给多个）
+
+# ② 浏览器冒烟：真浏览器 + 真后端 + 真 dev server（前置：8080 与 5173 都在跑）
+node scripts/browser-smoke.mjs
+```
+
+| 脚本 | 能证明什么 | 不能证明什么 |
+|---|---|---|
+| `check-sfc.cjs` | 这个文件能编译、模板里的名字都真实存在、组件都引了 | 运行时行为、接口对不对 |
+| `browser-smoke.mjs` | 页面在真浏览器里渲染出来了、登录能走通、**没有 page error / console.error / 失败请求** | 配色与布局（headless 看不见）、会改数据的表单提交 |
+
+> ⚠️ 两个都**不等于**「人工点过一遍」。前者是静态的，后者只断言"渲染出来了、没有报错"。
+
 ## 目录
 
 ```text
@@ -47,6 +67,7 @@ src/
 ├── format.js      时间、数字、状态字典、SQL 摘要
 ├── style.css      设计系统（CSS 变量 + 全部组件类）
 ├── components/    AppIcon · AppEmpty · AppPager · AppDrawer · StatusTag
+├── scripts/       check-sfc.cjs（静态校验）· browser-smoke.mjs（浏览器冒烟）
 └── views/
     ├── LoginView.vue          登录 / 注册
     ├── QueryView.vue          SQL 工作台（执行、截断提示、收藏、最近查询）
