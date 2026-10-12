@@ -475,7 +475,7 @@ exec 形式的 `ENTRYPOINT`（`SIGTERM` 直达 JVM，优雅停机才生效）。
 > 只写 `-Dgroups=integration` 的话，一条集成用例都不会跑，却会显示 BUILD SUCCESS。
 > 现在排除项已改成属性（`surefire.excludedGroups`），所以清空它就能放行。
 
-当前共 **421 个用例**（59 个测试源文件）：纯单元层 **380 个**（`mvn test`，不依赖任何中间件），
+当前共 **428 个用例**（61 个测试源文件）：纯单元层 **387 个**（`mvn test`，不依赖任何中间件），
 另外 **41 个**打了 `integration` 标签、默认不跑。集成用例覆盖：
 MyBatis-Plus 装配与分页、导出的幂等与卡单补偿、**真实 PostgreSQL 下的双方言行为**、
 写语句执行与角色权限、**审核工单的端到端链路**（提交 → 审批 → MQ → 执行 → 留痕）。
@@ -486,9 +486,17 @@ MyBatis-Plus 装配与分页、导出的幂等与卡单补偿、**真实 Postgre
 > 挡住重复执行的是消费者那个"只有当前状态是 APPROVED 才能认领"的条件更新。
 
 > ⚠️ 集成用例需要 `DB_USERNAME` / `DB_PASSWORD` / `JWT_SECRET` / `AES_KEY` 四个环境变量。
-> 不设的话第一个 Spring 上下文加载就会失败（`aesUtil` 初始化），
-> 后续所有集成用例统一报 "ApplicationContext failure threshold exceeded" ——
-> 看起来像"十几个用例坏了"，实际只是没设环境变量。
+>
+> 但**「缺一个就起不来」是不准确的说法** —— 实测三种缺法的结果并不一样：
+>
+> | 缺哪个 | 现象 | 为什么 |
+> |---|---|---|
+> | `AES_KEY` | **启动失败**：`aesUtil: Invocation of init method failed` | `AesProperties` 用 `@PostConstruct` 校验密钥长度，报错是中文的、能照着做 |
+> | `JWT_SECRET` | **启动失败**：`Could not resolve placeholder 'JWT_SECRET'` | yml 里写的是 `${JWT_SECRET}`，**没有默认值** |
+> | `DB_USERNAME` / `DB_PASSWORD` | **能起来**，第一次真连库才报 `Access denied`（健康检查 503）| Hikari 懒建连，启动阶段不碰数据库 |
+>
+> 对集成用例来说四个都必要（用例会真的查库）；而缺 `AES_KEY` / `JWT_SECRET` 时报的是
+> "ApplicationContext failure threshold exceeded" —— 看起来像"十几个用例坏了"，实际只是没设环境变量。
 
 单元测试覆盖的失败模式：AES 加解密与**密钥轮换**、JDBC URL 的方言差异与超时参数、
 SQL 校验（多语句 / 危险函数 / 系统库 / 可执行注释 / 空名单 / 按方言取名单）、

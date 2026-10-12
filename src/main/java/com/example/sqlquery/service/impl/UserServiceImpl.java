@@ -56,6 +56,15 @@ public class UserServiceImpl extends ServiceImpl<UserMapper,User> implements Use
             throw new BusinessException("用户名不存在或密码错误");
         }
 
+        // ⚠️ 密码对了不等于能进来：user.status = 0 表示账号已被停用（列默认 1）。
+        //    以前这里**没有**这一步 —— 后果是「停用一个账号」在代码上毫无作用：
+        //    运维把 status 改成 0 之后，本人照样登录、照样拿到 token。
+        //    只认「明确等于 0」：status 为 NULL 的历史行按启用处理，避免一次上线把老账号锁在门外。
+
+        if (Integer.valueOf(0).equals(user.getStatus())) {
+            throw new BusinessException("该账号已被停用，请联系管理员");
+        }
+
         // ⭐ 密码校验成功，是**唯一**能拿到明文的时刻 —— 也只有在此时才谈得上重算哈希。
         //    背景：BCrypt 的成本因子写在每条哈希串里，matches() 读的是哈希串里的那个值，
         //    所以把 platform.password.bcrypt-strength 调高之后，**老哈希不会自动升级** ——

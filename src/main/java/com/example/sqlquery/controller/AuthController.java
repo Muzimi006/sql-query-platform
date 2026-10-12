@@ -124,8 +124,12 @@ public class AuthController {
 
         boolean ipAllowed = rateLimitUtil.tryAcquireSlidingWindow(
                 "rate:login:ip:" + ip, LOGIN_LIMIT_PER_IP, AUTH_WINDOW_SECONDS, "login-ip");
+        // ⚠️ 账号维度必须**先归一化**再当 key：库里的 username 是 utf8mb4_unicode_ci（大小写不敏感），
+        //    admin / Admin / ADMIN 命中**同一行用户**；而 Redis 的 key 是**大小写敏感**的 ——
+        //    不归一化的话，换个大小写就换一个桶，账号维度那 10 次/分钟可以被轻易放大成若干倍。
         boolean accountAllowed = rateLimitUtil.tryAcquireSlidingWindow(
-                "rate:login:username:" + dto.getUsername(), LOGIN_LIMIT_PER_USERNAME, AUTH_WINDOW_SECONDS,
+                "rate:login:username:" + dto.getUsername().trim().toLowerCase(java.util.Locale.ROOT),
+                LOGIN_LIMIT_PER_USERNAME, AUTH_WINDOW_SECONDS,
                 "login-account");
 
         if (!ipAllowed || !accountAllowed) {

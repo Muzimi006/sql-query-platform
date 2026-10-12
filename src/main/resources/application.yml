@@ -394,11 +394,21 @@ export:
   #    用户看到"导出成功"却配着一句失败原因。
   #
   # ⚠️ 加了 started_at 之后，这个阈值和 query-timeout-seconds 的约束更直接了：
-  #    阈值只需要覆盖"执行上限 + 余量"，**不再需要为排队留余量**。
-  #    300 秒执行 + 300 秒余量 = 600 秒（保持原值不变，但含义收紧了）。
-  #    调大 query-timeout-seconds 时仍必须同步调大这个值。
-  stuck-running-minutes: 10
+  #    阈值必须**大于「最坏执行耗时」**，而消费者会退避重试 max-attempts 次 ——
+  #    最坏耗时 = max-attempts(3) × query-timeout-seconds(300) = 900 秒，**不是 300 秒**。
+  #
+  #    ⚠️ 这里原来只算了「300 秒执行 + 300 秒余量 = 600 秒」，漏了重试倍数：
+  #    600 <= 900，于是补偿任务会在消费者还在第 2 次尝试时就把它判成卡死，
+  #    而消费者的结果因为认领令牌已失配写不回去（只剩一条日志，用户看到前后矛盾的状态）。
+  #    ExportTaskRecoveryJob#warnIfTimeBudgetTooSmall 启动时会校验这条不变式，
+  #    ExportTimeBudgetConfigTest 把它搬进了测试 —— **启动日志会被刷过去，测试不会**。
+  stuck-running-minutes: 20
   recovery-cron: "0 */5 * * * ?"
+
+  # 崩溃残留的临时文件（*.csv.tmp）保留几小时后由清理任务扫掉。
+  # ⚠️ 崩溃留下的 .tmp 在库里**没有任何记录**，所以清理是**按目录扫**的（ExportFileCleaner）。
+  #    正常情况下 .tmp 只存在几秒到几分钟；给 6 小时是为了不误删"正在生成的大导出"。
+  tmp-retention-hours: 6
 
 # SQL 审核工单（审批通过后异步执行的那条链路）
 review:

@@ -105,6 +105,32 @@ class UserServiceImplTest {
     }
 
     @Test
+    void loginShouldRejectDisabledAccount() {
+        // ⚠️ 这条用例补的是一个**真实存在过的缺口**：登录以前只比密码，完全不看 status。
+        //    也就是说「停用一个账号」在代码上毫无作用 —— 运维把 user.status 改成 0 之后，
+        //    本人照样能登录、照样拿到 token（密码对就行）。
+        User disabled = userWithPassword("123456");
+        disabled.setStatus(0);
+        doReturn(disabled).when(userService).getByUsername(anyString());
+
+        BusinessException e = assertThrows(BusinessException.class,
+                () -> userService.login("alice", "123456"),
+                "密码正确但账号已停用 —— 必须挡住");
+        assertTrue(e.getMessage().contains("停用"), "提示要说清是「停用」而不是「密码错误」：" + e.getMessage());
+    }
+
+    @Test
+    void loginShouldStillWorkWhenStatusIsNull() {
+        // ⚠️ 边界：只认「明确等于 0」。status 为 NULL 的历史行必须按启用处理 ——
+        //    否则一次上线会把所有没填过 status 的老账号锁在门外。
+        User legacy = userWithPassword("123456");
+        legacy.setStatus(null);
+        doReturn(legacy).when(userService).getByUsername(anyString());
+
+        assertEquals("alice", userService.login("alice", "123456").getUsername());
+    }
+
+    @Test
     void updatePasswordShouldVerifyOldPasswordBeforeWriting() {
         doReturn(userWithPassword("old123")).when(userService).getById(anyLong());
         doReturn(true).when(userService).updateById(any(User.class));

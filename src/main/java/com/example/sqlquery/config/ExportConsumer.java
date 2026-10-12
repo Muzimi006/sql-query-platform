@@ -198,7 +198,7 @@ public class ExportConsumer {
                         //    ① 任务已经成功/失败 → 正常的幂等跳过，INFO；
                         //    ② 任务停在 RUNNING → 说明**上一轮投递还在跑**（进程被 kill/滚动发布时最典型）：
                         //       消息没被 ack，Broker 重投，而重投时状态已经不是 PENDING 了。
-                        //       这时我们 ack 掉它 —— 任务只能等补偿任务判失败（默认 10 分钟）。
+                        //       这时我们 ack 掉它 —— 任务只能等补偿任务判失败（export.stuck-running-minutes，默认 20 分钟）。
                         //       这是**真实的一次"消息被静默丢弃"**，必须留下痕迹。
                         warnIfRedeliveredInFlight(taskId);
                         ack(channel, deliveryTag);

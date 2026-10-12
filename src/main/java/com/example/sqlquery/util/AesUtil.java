@@ -61,7 +61,7 @@ public class AesUtil {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final AesProperties properties;
-
+ 
     public AesUtil(AesProperties properties) {
         this.properties = properties;
     }
