@@ -432,8 +432,8 @@ onUnmounted(() => {
     <!-- 表单卡 + 最近查询卡并排。
          用 flex-wrap 而不是固定两栏：窄屏（比如侧边栏占满的笔记本分屏）会自动折成上下两段，
          不需要额外写媒体查询，也不会把 SQL 输入框挤成一条缝 -->
-    <div class="row wrap" style="align-items:flex-start; gap:var(--gap)">
-      <div style="flex:1 1 560px; min-width:0">
+    <div class="split">
+      <div class="split-main">
         <div class="card">
           <div class="card-head">
             <AppIcon name="query" :size="16" />
@@ -508,11 +508,11 @@ onUnmounted(() => {
 
           <div class="card-foot">
             <button class="btn btn-primary" :disabled="running || sourcesLoading" @click="handleExecute">
-              <span v-if="running" class="spinner" style="border-top-color:currentColor"></span>
+              <span v-if="running" class="spinner"></span>
               <AppIcon v-else name="play" :size="15" />
               {{ running ? '执行中…' : '执行' }}
             </button>
-            <span class="row tiny muted-2" style="gap:4px">
+            <span class="row tight tiny muted-2">
               <kbd>{{ isMac ? '⌘' : 'Ctrl' }}</kbd><span>+</span><kbd>Enter</kbd>
             </span>
             <span class="spacer"></span>
@@ -523,7 +523,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div style="flex:0 1 320px; min-width:260px">
+      <div class="split-side">
         <div class="card">
           <div class="card-head">
             <AppIcon name="history" :size="16" />
@@ -559,12 +559,12 @@ onUnmounted(() => {
                   <tr
                     v-for="h in recent"
                     :key="h.id"
-                    style="cursor:pointer"
+                    class="clickable"
                     title="点击回填到上面的 SQL 输入框"
                     @click="fillFrom(h)"
                   >
                     <td>
-                      <div class="row" style="gap:6px">
+                      <div class="row tight">
                         <StatusTag :value="h.status" kind="history" />
                         <span class="tiny muted-2 nowrap" :title="h.createdAt">{{ fmtRelative(h.createdAt) }}</span>
                       </div>
@@ -587,7 +587,7 @@ onUnmounted(() => {
 
     <!-- 结果卡。整卡单独占一行：结果表列数不可控，需要完整的横向空间 -->
     <div class="card">
-      <div class="card-head" style="flex-wrap:wrap">
+      <div class="card-head">
         <AppIcon name="chart" :size="16" />
         <h2>执行结果</h2>
         <span v-if="lastRun.type" class="tag" :class="runTone ? 'tag-' + runTone : ''">{{ lastRun.type }}</span>
@@ -613,7 +613,7 @@ onUnmounted(() => {
         <!-- 2. 失败：后端 message 就是给用户看的人话，原样显示；
                 另外必须说清楚"这是业务失败，不是平台崩了"，
                 否则用户第一反应是"系统坏了，再点几次试试" -->
-        <div v-else-if="execError" class="alert alert-danger" style="margin-bottom:0">
+        <div v-else-if="execError" class="alert alert-danger mb-0">
           <AppIcon name="warn" :size="16" />
           <div>
             <div class="strong">{{ execError }}</div>
@@ -652,7 +652,7 @@ onUnmounted(() => {
             </div>
             <div class="stat">
               <div class="k"><AppIcon name="database" :size="13" />数据源</div>
-              <div class="v" style="font-size:16px; word-break:break-all">{{ lastRun.sourceName }}</div>
+              <div class="v text-lg break">{{ lastRun.sourceName }}</div>
               <div class="s">{{ lastRun.sourceAddr || '—' }}</div>
             </div>
           </div>
@@ -672,7 +672,7 @@ onUnmounted(() => {
 
           <!-- 写语句：后端明确区分了"查到 0 行"和"这条语句不返回结果集"，
                前端也要区分，不能把 UPDATE 成功显示成一个空结果 -->
-          <div v-if="isWrite" class="alert alert-ok" style="margin-bottom:0">
+          <div v-if="isWrite" class="alert alert-ok mb-0">
             <AppIcon name="check" :size="16" />
             <div>
               <div class="strong">语句执行成功，影响 {{ fmtNumber(result.affectedRows) }} 行</div>
@@ -722,7 +722,7 @@ onUnmounted(() => {
     <!-- 收藏弹窗 -->
     <Teleport to="body">
       <div v-if="favOpen" class="mask center" @click.self="closeFavorite">
-        <div class="modal" style="width:min(560px,92vw)">
+        <div class="modal">
           <div class="modal-head">
             <AppIcon name="star" :size="17" />
             <h2>收藏这条 SQL</h2>
@@ -757,7 +757,7 @@ onUnmounted(() => {
           <div class="modal-foot">
             <button class="btn" :disabled="favSaving" @click="closeFavorite">取消</button>
             <button class="btn btn-primary" :disabled="favSaving" @click="submitFavorite">
-              <span v-if="favSaving" class="spinner" style="border-top-color:currentColor"></span>
+              <span v-if="favSaving" class="spinner"></span>
               {{ favSaving ? '收藏中…' : '收藏' }}
             </button>
           </div>

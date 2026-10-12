@@ -138,7 +138,7 @@ onMounted(() => {
         <span class="hint">
           共 {{ list.length }} 条<template v-if="keyword.trim()"> · 匹配 {{ filtered.length }} 条</template>
         </span>
-        <span v-if="loading && list.length" class="loading-line tiny" style="padding:0">
+        <span v-if="loading && list.length" class="loading-line tiny pad-0">
           <span class="spinner"></span>加载中…
         </span>
         <span class="spacer"></span>
@@ -152,7 +152,7 @@ onMounted(() => {
 
       <div class="card-body tight">
         <div class="row wrap">
-          <div class="field mb-0" style="min-width: 280px">
+          <div class="field mb-0 wide">
             <label>搜索</label>
             <input
               class="input"
@@ -213,7 +213,7 @@ onMounted(() => {
 
         <div class="card-body tight">
           <!-- code 自带 max-height:420px，卡片墙里太高会把别的卡片挤下去，这里收到 160px -->
-          <div class="code" :style="{ maxHeight: '160px' }">{{ item.sqlText }}</div>
+          <div class="code code-sm">{{ item.sqlText }}</div>
           <div class="row wrap mt-1 tiny muted-2">
             <AppIcon name="database" :size="12" />
             <span class="nowrap">{{ sourceLabel(item.dataSourceId) }}</span>

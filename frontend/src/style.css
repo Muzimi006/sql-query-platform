@@ -182,6 +182,18 @@ code, .mono, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "
 .content { padding: 22px; flex: 1; }
 .content-narrow { max-width: 1080px; }
 
+/* 两栏工作区：主区自适应 + 固定宽侧栏。窄屏自动折成上下两段（不用写媒体查询到组件里）。
+   ⚠️ 侧栏必须 min-width: 0 之外的约束：不加 min-width 时 flex 子项会被内容撑破 */
+.split { display: flex; gap: var(--gap); align-items: flex-start; flex-wrap: wrap; }
+.split-main { flex: 1 1 560px; min-width: 0; }
+.split-side { flex: 0 1 320px; min-width: 260px; }
+
+/* 筛选栏：内部 .field 自动定宽并去掉下边距，避免每个筛选框各写一次 min-width */
+.filter-bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.filter-bar .field { min-width: 150px; margin-bottom: 0; }
+.filter-bar .field.wide { min-width: 260px; }
+.filter-bar .field.narrow { min-width: 110px; }
+
 /* 用户气泡 + 下拉 */
 .user-chip {
   display: flex; align-items: center; gap: 8px; cursor: pointer;
@@ -219,6 +231,8 @@ code, .mono, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "
 .card-head {
   display: flex; align-items: center; gap: 10px;
   padding: 14px 18px; border-bottom: 1px solid var(--border);
+  /* 允许换行：卡头里常常塞着标题 + 标签 + 一串按钮，窄屏会把它们挤成一条缝 */
+  flex-wrap: wrap;
 }
 .card-head .spacer { flex: 1; }
 .card-head h2 { font-size: 15px; }
@@ -431,6 +445,13 @@ kbd {
 .muted-2 { color: var(--muted-2); }
 /* 语义色文本。⚠️ 没有这几个类时，各页面会用内联 style 写 color —— 那正是
    「每个页面各写一遍」的开始，深色模式也容易漏。 */
+/* 小的排版/交互工具类：没有它们时，各页面就会用内联 style 各写一遍 */
+.row.top { align-items: flex-start; }
+.row.tight { gap: 4px; }
+.clickable { cursor: pointer; }
+.pad-0 { padding: 0; }
+.text-lg { font-size: 16px; font-weight: 650; }
+.code-sm { max-height: 170px; }
 .text-danger { color: var(--danger); }
 .text-warn { color: var(--warn); }
 .text-ok { color: var(--ok); }

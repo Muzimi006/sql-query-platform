@@ -218,7 +218,7 @@ onMounted(() => {
       <div class="card-head">
         <h2>查询历史</h2>
         <span class="hint">每次执行都留痕：成败、耗时、失败原因</span>
-        <span v-if="loading && rows.length" class="loading-line tiny" style="padding:0">
+        <span v-if="loading && rows.length" class="loading-line tiny pad-0">
           <span class="spinner"></span>加载中…
         </span>
         <span class="spacer"></span>
@@ -236,15 +236,15 @@ onMounted(() => {
       </div>
 
       <div class="card-body tight">
-        <div class="row wrap">
-          <div class="field mb-0" style="min-width: 150px">
+        <div class="filter-bar">
+          <div class="field">
             <label>状态</label>
             <select class="select" v-model="filters.status" :disabled="loading">
               <option value="">全部</option>
               <option v-for="o in STATUS_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
             </select>
           </div>
-          <div class="field mb-0" style="min-width: 200px">
+          <div class="field wide">
             <label>数据源</label>
             <select class="select" v-model="filters.dataSourceId" :disabled="loading || !sources.length">
               <option value="">全部</option>
@@ -252,7 +252,7 @@ onMounted(() => {
             </select>
           </div>
           <div class="spacer"></div>
-          <div class="field mb-0" style="min-width: 110px">
+          <div class="field narrow">
             <label>每页条数</label>
             <select class="select" v-model.number="size" :disabled="loading">
               <option :value="10">10 条</option>
@@ -382,7 +382,7 @@ onMounted(() => {
 
             <div class="field mb-0 mt-2">
               <label>SQL（按原文保存，这里不能改）</label>
-              <div class="code" :style="{ maxHeight: '170px' }">{{ favRow && favRow.sqlText }}</div>
+              <div class="code code-sm">{{ favRow && favRow.sqlText }}</div>
             </div>
           </div>
 
