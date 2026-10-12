@@ -127,6 +127,11 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
 
     @Override
     public void addDbSource(Long userId, DbSourceDTO dto) {
+        // ⚠️ 密码非空校验在这里，不在 DTO 上：DTO 被新增和编辑共用，
+        //    而编辑时「留空 = 不修改」是合法的。见 DbSourceDTO.password 的注释。
+        if (dto.getPassword() == null || dto.getPassword().isBlank()) {
+            throw new BusinessException("数据库密码不能为空");
+        }
         if (!checkNameUnique(userId, dto.getName())) {
             throw new BusinessException("数据源名称已存在");
         }
@@ -179,7 +184,16 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         }
         dbSource.setId(id);
         dbSource.setUserId(userId);
-        dbSource.setPasswordEncrypted(aesUtil.encrypt(dto.getPassword()));
+        // ⭐ 密码留空 = 不修改：出参永不下发密码，所以编辑对话框里密码框当然是空的；
+        //    如果这里无条件用 dto 的值覆盖，用户为了改个名字就必须重新输入一遍密码。
+        //    ⚠️ 必须回填**库里那条密文**（exist.getPasswordEncrypted()），不能把空串加密后写进去 ——
+        //    后者会把数据源改成「密码为空」的状态，下一次连接必然失败，而且报错与"密码错"一模一样。
+        String rawPassword = dto.getPassword();
+        if (rawPassword == null || rawPassword.isBlank()) {
+            dbSource.setPasswordEncrypted(exist.getPasswordEncrypted());
+        } else {
+            dbSource.setPasswordEncrypted(aesUtil.encrypt(rawPassword));
+        }
 
         try {
             updateById(dbSource);
@@ -509,7 +523,9 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         dbSource.setPort(dto.getPort());
         dbSource.setDatabaseName(dto.getDatabaseName());
         dbSource.setUsername(dto.getUsername());
-        dbSource.setPasswordEncrypted(dto.getPassword());
+        // ⚠️ 刻意**不在这里**设置密码字段：密码要么来自 encrypt(...)，要么来自库里已有的密文，
+        //    统一由调用方（add / update）显式赋值。以前这里放过 dto.getPassword()（明文），
+        //    一旦哪个调用方忘了覆盖，明文就会直接落库。
         return dbSource;
     }
 
