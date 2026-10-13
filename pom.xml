@@ -261,6 +261,24 @@
 									<artifactId>lombok</artifactId>
 								</path>
 							</annotationProcessorPaths>
+							<!--
+							  只对**主源码**开 lint（testCompile 不加）。三类取舍都写在这里：
+							
+							  ① 为什么不是 -Xlint:all：all 会连带打开 -processing 与 -classfile，
+							     实测 20 条输出里 13 条是纯噪音 —— 前者是"没有处理程序要使用以下任何注释"
+							     （Lombok/Spring 注释必然如此），后者是依赖里的 kotlin.Metadata 造成的
+							     "找不到注释方法"（不是我们的代码）。噪音多了，人就会学会忽略警告。
+							  ② 为什么只给主源码开：测试源码有 38 条（几乎全是 Mockito 的 ArgumentCaptor
+							     泛型转换、泛型数组创建这类写法），一起开等于长期挂着一屏黄。
+							  ③ 为什么不用 -Werror：JDK 升级可能新增 lint 类别，不该因此让构建直接失败。
+							
+							  起因：SqlValidateUtil 里两处 JSqlParser 4.9 的 @Deprecated 调用（getTableList /
+							  Statements.getStatements）在 IDE 里一直挂黄，而命令行构建完全看不见 ——
+							  这类"只有 IDE 能看见"的警告最容易一直留着。打开之后它们立刻被列出来了。
+							-->
+							<compilerArgs>
+								<arg>-Xlint:all,-processing,-classfile</arg>
+							</compilerArgs>
 						</configuration>
 					</execution>
 					<execution>

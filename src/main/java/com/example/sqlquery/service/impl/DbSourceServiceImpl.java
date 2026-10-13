@@ -218,6 +218,12 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
     }
 
     @Override
+    // ⚠️ 抑制的是 javac 的 -Xlint:try 警告："资源 connection 在 try 体内从未被引用"。
+    //    这里是**误报**：连接对象的用途就是"建得起来 + 用完关掉"，不引用它是有意的
+    //    （加一句 connection.isValid(1) 能消掉警告，但那会多发一次往返，
+    //      而"连得上"在 getConnection 正常返回时就已经成立）。
+    //    换 Java 9 的"无变量资源"写法也不行：那个语法只接受**变量**，不接受方法调用表达式。
+    @SuppressWarnings("try")
     public boolean testConnection(DbSourceDTO dto) {
         DbSource dbSource = toEntity(dto);
         String url = JdbcUrlUtil.build(dbSource);
@@ -225,11 +231,12 @@ public class DbSourceServiceImpl extends ServiceImpl<DbSourceMapper, DbSource> i
         //    而这正是"把一个不可达主机名填进来"时最容易卡住的地方。
         //    DriverManager 是全局设置，设成 5 秒与 JdbcUrlUtil 的 connectTimeout 对齐。
         DriverManager.setLoginTimeout(5);
-        try(Connection connection = DriverManager.getConnection(
+        try (Connection connection = DriverManager.getConnection(
                 url,
                 dbSource.getUsername(),
                 dto.getPassword())) {
-            return  true;
+            // 刻意不使用 connection：能走到这一行就说明连上了（抑制原因见方法上的注释）
+            return true;
         }catch (SQLException e){
             throw new BusinessException("无法连接到数据库：" + e.getMessage());
         }

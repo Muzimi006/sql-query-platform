@@ -31,6 +31,8 @@ package com.example.sqlquery.exception;
  */
 public class RejectedBeforeWorkException extends BusinessException {
 
+    private static final long serialVersionUID = 1L;
+
     public RejectedBeforeWorkException(String message) {
         super(message);
     }

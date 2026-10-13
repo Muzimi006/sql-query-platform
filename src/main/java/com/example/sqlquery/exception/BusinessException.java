@@ -18,6 +18,14 @@ package com.example.sqlquery.exception;
  */
 public class BusinessException extends RuntimeException {
 
+    /**
+     * ⚠️ serialVersionUID：Java 规定可序列化类应当显式声明它 —— 不声明时 javac 的
+     * {@code -Xlint:serial} 会报警告，而且类结构一变，默认算出来的 UID 也会变。
+     * 本项目这几个异常其实从不被序列化（只在进程内传递，最终由 GlobalExceptionHandler
+     * 转成 JSON），显式写一个固定值没有代价，也省得每次编译都挂着一条黄。
+     */
+    private static final long serialVersionUID = 1L;
+
     public BusinessException(String message) {
         super(message);
     }

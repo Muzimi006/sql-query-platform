@@ -174,7 +174,12 @@ public final class SqlValidateUtil {
         // getTableList 会完整遍历一遍语法树（含子查询 / CTE / UNION / JOIN），
         // 一趟同时把「表名」和「函数名」都收上来，不需要走两遍。
         SqlInspector inspector = new SqlInspector();
-        List<String> tables = inspector.getTableList(statement);
+        // ⚠️ 这里以前调的是 getTableList(statement) —— 它在 JSqlParser 4.9 里已标注 @Deprecated。
+        //    查过它的字节码：方法体就是 `new ArrayList<>(getTables(statement))`，一个字不差，
+        //    所以自己包一层等价、行为完全一致（顺序也一样，因为包的还是同一个 Set）。
+        //    顺带说明为什么不用 getTables 直接返回的 Set：下面 checkSystemSchema 和
+        //    ValidationResult（会回给前端当 involvedTables）都按 List 用，且希望能保留遍历顺序。
+        List<String> tables = new ArrayList<>(inspector.getTables(statement));
         checkDangerousFunctions(dialect, inspector.foundFunctions);
         checkSystemSchema(dialect, tables);
 
@@ -200,11 +205,13 @@ public final class SqlValidateUtil {
             throw new BusinessException("SQL语法错误：" + e.getMessage());
         }
 
-        List<Statement> list = statements.getStatements();
-        if (list == null || list.size() != 1) {
+        // ⚠️ getStatements() 在 4.9 里已标注 @Deprecated —— 因为 Statements 自己就
+        //    `extends ArrayList<Statement>`（反编译确认过），所以直接把它当 List 用即可。
+        //    null 判断保留：解析器在极端输入下返回 null 的历史行为不值得赌。
+        if (statements == null || statements.size() != 1) {
             throw new BusinessException("只允许执行单条SQL");
         }
-        return list.get(0);
+        return statements.get(0);
     }
 
     /**

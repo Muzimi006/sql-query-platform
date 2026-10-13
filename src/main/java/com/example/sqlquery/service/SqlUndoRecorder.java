@@ -161,6 +161,9 @@ public class SqlUndoRecorder {
      * <b>能力边界</b>（正常现象），不该报警；而取像抛异常是要人去看的。
      */
     static class SkipCaptureException extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
         SkipCaptureException(String message) {
             super(message);
         }

@@ -72,6 +72,18 @@
 - `management.server.address`、审计、限流等既有行为**均未改变对外契约**（HTTP 200 + 业务 code 不变）。
 
 ### 修复
+- ⭐ **主源码 lint 警告清零，并把这条线搬进构建**：`default-compile` 现在带
+  `-Xlint:all,-processing,-classfile`。起因是 `SqlValidateUtil` 里两处 JSqlParser 4.9 的
+  `@Deprecated` 调用（`TablesNamesFinder.getTableList` / `Statements.getStatements`）——
+  它们**只在 IDE 里挂黄，命令行构建完全看不见**；`getTableList` 的实现就是
+  `new ArrayList<>(getTables(...))`（反编译确认），所以自己包一层等价、行为不变。
+  打开 lint 后又抓出 6 条同类问题，一起修掉：① `SqlImpactAnalyzer` 两处 `JsonNode.fields()`
+  （已弃用）→ `properties()`；② `DbSourceServiceImpl` 的"资源 `connection` 在 try 体内从未被引用"
+  → 就地抑制并写明理由（那是误报：连接对象的用途就是"建得起来"，Java 9 的"无变量资源"语法只接受变量、
+  不接受方法调用）；③ 四个可序列化异常补 `serialVersionUID`。
+  ⚠️ 唯一保留的例外：`RabbitConfig` 的 `Jackson2JsonMessageConverter`（Spring AMQP 4.1 标记 `forRemoval`，
+  替代品基于 Jackson 3，换过去要同时引入两套 JSON 栈并改消息体线上格式 —— 登记在案，需单独一轮 + MQ 集成测试）。
+  不用 `-Werror`：JDK 升级可能新增 lint 类别，不该因此让构建直接失败。
 - ⭐ **编辑数据源时「密码留空 = 不修改」以前根本做不到**：`DbSourceDTO.password` 带 `@NotBlank`（新增和编辑共用同一个 DTO），
   而 `updateDbSource` 又无条件用请求里的密码覆盖密文 —— 而出参**永不下发密码**，所以编辑框天然是空的：
   结果是「只想改个名字，也必须重新输一遍数据库密码」；更糟的是密码框被清空又过了校验时，

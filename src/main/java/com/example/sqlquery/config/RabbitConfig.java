@@ -125,7 +125,16 @@ public class RabbitConfig {
      * 在新消费者手里会反序列化失败 → nack → 进死信队列。
      * 升级前应当先清空队列，或者接受这些消息进死信。
      */
+    // ⚠️ 已知的 lint 例外（唯一一条，已登记，不要"顺手"改掉）：
+    //    Spring AMQP 4.1 把 Jackson2JsonMessageConverter 标记为 @Deprecated(forRemoval=true)，
+    //    替代品是同包的 JacksonJsonMessageConverter —— 但它基于 **Jackson 3**（tools.jackson），
+    //    而本项目其余地方用的是 Jackson 2（com.fasterxml，见 JacksonConfig）。
+    //    直接换的后果是**同时引入两套 JSON 栈**，而且消息体的线上格式变了 ——
+    //    那需要单独一轮：要么整体迁到 Jackson 3，要么等 Spring 真正删除时再动，
+    //    并且**必须用真实 Broker 跑一遍集成测试**（RabbitConfigTest 只覆盖了转换器本身的断言，
+    //    端到端要 DeadLetterRoutingIntegrationTest / ExportIdempotencyIntegrationTest）。
     @Bean
+    @SuppressWarnings("removal")
     public MessageConverter jsonMessageConverter() {
         return new Jackson2JsonMessageConverter();
     }

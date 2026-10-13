@@ -31,6 +31,8 @@ import java.util.Set;
  */
 public class SqlTypeNotAllowedException extends BusinessException {
 
+    private static final long serialVersionUID = 1L;
+
     /** 实际解析出来的语句类型。 */
     private final transient SqlType actualType;
 

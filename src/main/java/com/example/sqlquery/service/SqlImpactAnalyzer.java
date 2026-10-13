@@ -11,7 +11,6 @@ import org.springframework.stereotype.Component;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -132,8 +131,11 @@ public class SqlImpactAnalyzer {
             if (value != null && value.isNumber()) {
                 max = value.asLong();
             }
-            for (Iterator<Map.Entry<String, JsonNode>> it = node.fields(); it.hasNext(); ) {
-                Long child = maxLongField(it.next().getValue(), fieldName);
+            // ⚠️ 原来用的是 node.fields() —— 它在 Jackson 里已标注 @Deprecated，替代品是
+            //    properties()（返回 Set<Entry>，2.15+ 才有，本项目 Jackson 2.22 实证存在）。
+            //    换成它之后连显式 Iterator 都不需要了，循环更直白。
+            for (Map.Entry<String, JsonNode> entry : node.properties()) {
+                Long child = maxLongField(entry.getValue(), fieldName);
                 if (child != null && (max == null || child > max)) {
                     max = child;
                 }
@@ -161,8 +163,8 @@ public class SqlImpactAnalyzer {
             if (value != null && value.isTextual() && expected.equalsIgnoreCase(value.asText())) {
                 return true;
             }
-            for (Iterator<Map.Entry<String, JsonNode>> it = node.fields(); it.hasNext(); ) {
-                if (containsTextValue(it.next().getValue(), fieldName, expected)) {
+            for (Map.Entry<String, JsonNode> entry : node.properties()) {
+                if (containsTextValue(entry.getValue(), fieldName, expected)) {
                     return true;
                 }
             }
