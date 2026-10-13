@@ -1,13 +1,13 @@
 package com.example.sqlquery.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.example.sqlquery.common.DbSourceStatus;
-import com.example.sqlquery.common.ReviewStatus;
-import com.example.sqlquery.common.UndoStatus;
+import com.example.sqlquery.domain.DbSourceStatus;
+import com.example.sqlquery.domain.ReviewStatus;
+import com.example.sqlquery.domain.UndoStatus;
 import com.example.sqlquery.entity.SqlReviewUndo;
 import com.example.sqlquery.mapper.SqlReviewUndoMapper;
 import com.example.sqlquery.common.UserContext;
-import com.example.sqlquery.config.RabbitConfig;
+import com.example.sqlquery.mq.RabbitConfig;
 import com.example.sqlquery.dto.DbSourceDTO;
 import com.example.sqlquery.dto.SqlReviewSubmitDTO;
 import com.example.sqlquery.entity.SqlReviewRequest;

@@ -1,6 +1,6 @@
 package com.example.sqlquery.cache;
 
-import com.example.sqlquery.util.ConnectionManager;
+import com.example.sqlquery.infra.ConnectionManager;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.connection.Message;
 import org.springframework.data.redis.connection.MessageListener;

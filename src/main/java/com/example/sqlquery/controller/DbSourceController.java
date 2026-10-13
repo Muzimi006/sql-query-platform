@@ -8,7 +8,7 @@ import com.example.sqlquery.dto.DbSourceDTO;
 
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.service.DbSourceService;
-import com.example.sqlquery.util.RateLimitUtil;
+import com.example.sqlquery.infra.RateLimitUtil;
 import org.springframework.beans.factory.annotation.Value;
 
 import com.example.sqlquery.vo.DbSourceVO;

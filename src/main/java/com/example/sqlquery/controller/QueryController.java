@@ -5,7 +5,7 @@ import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.dto.QueryDTO;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.service.QueryService;
-import com.example.sqlquery.util.RateLimitUtil;
+import com.example.sqlquery.infra.RateLimitUtil;
 import com.example.sqlquery.vo.QueryVO;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Value;

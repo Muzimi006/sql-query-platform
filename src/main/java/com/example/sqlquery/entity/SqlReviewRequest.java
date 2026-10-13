@@ -51,7 +51,7 @@ public class SqlReviewRequest {
     /** 预估的补充说明：全表扫描、该方言不支持预估、EXPLAIN 失败等。 */
     private String estimateNote;
 
-    /** 来源：{@link com.example.sqlquery.common.SqlOrigin}。 */
+    /** 来源：{@link com.example.sqlquery.domain.SqlOrigin}。 */
     private String generatedBy;
 
     /** AI 生成时，用户的原始自然语言问题 —— 审批人靠它判断"意图对不对"。 */

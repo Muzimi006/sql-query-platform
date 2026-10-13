@@ -2,7 +2,7 @@ package com.example.sqlquery.service;
 
 import com.example.sqlquery.dialect.SqlDialect;
 import com.example.sqlquery.entity.DbSource;
-import com.example.sqlquery.util.ConnectionManager;
+import com.example.sqlquery.infra.ConnectionManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;

@@ -8,7 +8,7 @@ import com.example.sqlquery.dto.SqlReviewDecisionDTO;
 import com.example.sqlquery.dto.SqlReviewSubmitDTO;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.service.SqlReviewService;
-import com.example.sqlquery.util.RateLimitUtil;
+import com.example.sqlquery.infra.RateLimitUtil;
 import com.example.sqlquery.vo.SqlReviewRequestVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;

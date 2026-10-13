@@ -4,8 +4,8 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
-import com.example.sqlquery.common.ReviewStatus;
-import com.example.sqlquery.common.SqlOrigin;
+import com.example.sqlquery.domain.ReviewStatus;
+import com.example.sqlquery.domain.SqlOrigin;
 import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.common.UserRole;
 import com.example.sqlquery.dto.SqlReviewSubmitDTO;
@@ -37,6 +37,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.example.sqlquery.common.PageConstants;
+import com.example.sqlquery.mapper.SqlReviewUndoMapper;
+import com.example.sqlquery.mq.RabbitConfig;
 
 /**
  * SQL 审核工单服务的核心行为。
@@ -337,7 +340,7 @@ class SqlReviewServiceImplTest {
         service.approve(9L, 1L, "ok");
 
         Mockito.verify(rabbitTemplate).convertAndSend(
-                ArgumentMatchers.eq(com.example.sqlquery.config.RabbitConfig.REVIEW_QUEUE),
+                ArgumentMatchers.eq(com.example.sqlquery.mq.RabbitConfig.REVIEW_QUEUE),
                 ArgumentMatchers.eq(1L),
                 ArgumentMatchers.any(org.springframework.amqp.rabbit.connection.CorrelationData.class));
     }

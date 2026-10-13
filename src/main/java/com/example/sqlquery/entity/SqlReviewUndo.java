@@ -25,7 +25,7 @@ public class SqlReviewUndo {
     @TableId(type = IdType.INPUT)
     private Long reviewId;
 
-    /** 见 {@link com.example.sqlquery.common.UndoStatus}。 */
+    /** 见 {@link com.example.sqlquery.domain.UndoStatus}。 */
     private String captureStatus;
 
     /** 没留存下来时，为什么 —— 这句话直接展示给管理员。 */

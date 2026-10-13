@@ -1,6 +1,6 @@
 package com.example.sqlquery.service;
 
-import com.example.sqlquery.common.UndoStatus;
+import com.example.sqlquery.domain.UndoStatus;
 import com.example.sqlquery.dto.DbSourceDTO;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.vo.DbSourceVO;

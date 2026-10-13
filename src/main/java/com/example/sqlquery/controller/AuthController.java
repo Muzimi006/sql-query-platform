@@ -11,7 +11,7 @@ import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.service.UserService;
 import com.example.sqlquery.util.ClientIpUtil;
 import com.example.sqlquery.util.JwtUtil;
-import com.example.sqlquery.util.RateLimitUtil;
+import com.example.sqlquery.infra.RateLimitUtil;
 import com.example.sqlquery.vo.UserVO;
 import jakarta.servlet.http.HttpServletRequest;
 import io.swagger.v3.oas.annotations.Operation;

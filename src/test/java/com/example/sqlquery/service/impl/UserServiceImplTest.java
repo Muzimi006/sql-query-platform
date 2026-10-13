@@ -23,6 +23,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
+import com.example.sqlquery.metrics.SqlPlatformMetrics;
 
 /**
  * 注册 / 登录 / 改密码这条链路的测试。

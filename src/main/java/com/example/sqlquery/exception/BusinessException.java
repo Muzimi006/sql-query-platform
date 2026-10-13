@@ -9,7 +9,7 @@ package com.example.sqlquery.exception;
  * {@code throw new BusinessException("SQL执行失败：" + e.getMessage())}。
  *
  * <p>看起来只是少了点栈信息，但它<b>静默废掉了一个保护措施</b>：
- * {@link com.example.sqlquery.util.DbSourceCircuitBreaker} 判断"算不算基础设施失败"时
+ * {@link com.example.sqlquery.infra.DbSourceCircuitBreaker} 判断"算不算基础设施失败"时
  * <b>沿 cause 链找</b>（{@code SQLTransientConnectionException} / {@code ConnectException} / Hikari 的异常…），
  * 而它拿到的永远是一个 <b>cause 为 null 的 BusinessException</b> →
  * 判定恒为"不是基础设施失败" → <b>熔断器永远不会打开</b>。

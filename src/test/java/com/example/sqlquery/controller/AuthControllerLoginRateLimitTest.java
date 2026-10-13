@@ -4,7 +4,7 @@ import com.example.sqlquery.dto.LoginDTO;
 import com.example.sqlquery.service.TokenBlacklistService;
 import com.example.sqlquery.service.UserService;
 import com.example.sqlquery.util.JwtUtil;
-import com.example.sqlquery.util.RateLimitUtil;
+import com.example.sqlquery.infra.RateLimitUtil;
 import com.example.sqlquery.vo.UserVO;
 import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.BeforeEach;

@@ -1,6 +1,6 @@
 package com.example.sqlquery.service.impl;
 
-import com.example.sqlquery.common.DbSourceStatus;
+import com.example.sqlquery.domain.DbSourceStatus;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.cache.DbSourceCacheInvalidator;

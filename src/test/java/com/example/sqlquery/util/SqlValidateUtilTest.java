@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.example.sqlquery.entity.User;
 
 /**
  * 覆盖 {@link SqlValidateUtil#validate} —— <b>生产代码唯一的 SQL 校验入口</b>。

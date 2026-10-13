@@ -5,10 +5,10 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.sqlquery.common.PageConstants;
-import com.example.sqlquery.common.ReviewStatus;
-import com.example.sqlquery.common.SqlOrigin;
+import com.example.sqlquery.domain.ReviewStatus;
+import com.example.sqlquery.domain.SqlOrigin;
 import com.example.sqlquery.common.UserContext;
-import com.example.sqlquery.config.RabbitConfig;
+import com.example.sqlquery.mq.RabbitConfig;
 import com.example.sqlquery.dialect.SqlDialect;
 import com.example.sqlquery.dto.SqlReviewSubmitDTO;
 import com.example.sqlquery.entity.DbSource;
@@ -37,6 +37,7 @@ import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import com.example.sqlquery.job.SqlReviewRecoveryJob;
 
 /**
  * SQL 审核工单的实现。
