@@ -25,7 +25,6 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.example.sqlquery.mq.RabbitConfig;
@@ -45,7 +44,13 @@ import com.example.sqlquery.mq.RabbitConfig;
  *
  * <p>第二条是这个类存在的最重要的理由：<b>把不确定性交给人，
  * 而不是用一个「重试」把不确定性变成实际的错误数据。</b>
+ *
+ * <p>⚠️ 类级 {@code @SuppressWarnings("unchecked")} 的理由：这个类用 Mockito 的
+ * {@code ArgumentCaptor.forClass(...)} 与匹配器 varargs，二者在 Java 泛型下必然产生
+ * unchecked 警告（框架 API 的固有形态，不是隐患）。就地抑制，比在构建日志里留一屏黄
+ * 更利于发现真问题 —— 这一条和 build 里"测试源码也开 lint"是配套的。
  */
+@SuppressWarnings("unchecked")
 class SqlReviewRecoveryJobTest {
 
     private SqlReviewRequestMapper reviewMapper;

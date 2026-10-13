@@ -2,7 +2,6 @@ package com.example.sqlquery.service.impl;
 
 import com.example.sqlquery.domain.ExportStatus;
 import com.example.sqlquery.dialect.SqlDialect;
-import com.example.sqlquery.common.UserContext;
 import com.example.sqlquery.mq.RabbitConfig;
 import com.example.sqlquery.service.SqlPermissionService;
 import com.example.sqlquery.dto.ExportTaskDTO;

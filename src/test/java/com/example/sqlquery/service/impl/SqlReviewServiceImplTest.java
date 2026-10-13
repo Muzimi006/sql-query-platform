@@ -56,6 +56,10 @@ import com.example.sqlquery.mq.RabbitConfig;
  *   <li><b>越权看别人的工单</b>：回答必须是「不存在」而不是「无权」。</li>
  * </ol>
  */
+// ⚠️ 类级抑制的理由：这个类用 Mockito 的 ArgumentCaptor.forClass(...) 与匹配器 varargs，
+//    二者在 Java 泛型下**必然**产生 unchecked 警告（框架 API 的固有形态，不是隐患）。
+//    就地抑制，比在构建日志里留一屏黄更利于发现真问题。
+@SuppressWarnings("unchecked")
 class SqlReviewServiceImplTest {
 
     private SqlReviewRequestMapper reviewMapper;

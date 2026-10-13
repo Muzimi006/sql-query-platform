@@ -24,14 +24,12 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.sql.Connection;
 import java.sql.Statement;
 import java.util.Map;
 import java.util.Set;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -54,6 +52,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       否则线上是「数据库时钟写、JVM 时钟读」，容器 TZ 一变卡死判定就整体偏掉。</li>
  * </ol>
  */
+// ⚠️ 类级抑制的理由：这个类用 Mockito 的 ArgumentCaptor.forClass(...) 与匹配器 varargs，
+//    二者在 Java 泛型下**必然**产生 unchecked 警告（框架 API 的固有形态，不是隐患）。
+//    就地抑制，比在构建日志里留一屏黄更利于发现真问题。
+@SuppressWarnings("unchecked")
 class SqlReviewConsumerTest {
 
     private SqlReviewRequestMapper reviewMapper;

@@ -36,6 +36,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       而一张表失败不该让另外两张也停下。</li>
  * </ol>
  */
+// ⚠️ 类级抑制的理由：这个类用 Mockito 的 ArgumentCaptor.forClass(...) 与匹配器 varargs，
+//    二者在 Java 泛型下**必然**产生 unchecked 警告（框架 API 的固有形态，不是隐患）。
+//    就地抑制，比在构建日志里留一屏黄更利于发现真问题。
+@SuppressWarnings("unchecked")
 class DataRetentionJobTest {
 
     private static final int BATCH = 1000;
@@ -197,7 +201,9 @@ class DataRetentionJobTest {
         var captor = org.mockito.ArgumentCaptor.forClass(
                 com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
         Mockito.verify(exportTaskMapper).selectList(captor.capture());
-        String sql = ((com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper) captor.getValue()).getSqlSegment();
+        // captor 是按原始类型（LambdaQueryWrapper.class）建的，getValue() 本来就是那个类型，
+        // 再强转一次是多余的（javac 的 -Xlint:cast 会报"冗余的转换"）。
+        String sql = captor.getValue().getSqlSegment();
         assertTrue(sql.contains("created_at"), "筛的必须是 created_at，实际：" + sql);
         assertTrue(sql.contains("ORDER BY"), "必须按主键升序、先删最老的，实际：" + sql);
         assertTrue(sql.contains("LIMIT"), "必须有批次上限，实际：" + sql);

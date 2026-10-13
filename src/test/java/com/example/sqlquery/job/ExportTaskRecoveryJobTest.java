@@ -39,6 +39,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       任务可能已经被正常完成了，无条件写回会把 SUCCESS 覆盖成 FAILED。
  * </ol>
  */
+// ⚠️ 类级抑制的理由：这个类用 Mockito 的 ArgumentCaptor.forClass(...) 与匹配器 varargs，
+//    二者在 Java 泛型下**必然**产生 unchecked 警告（框架 API 的固有形态，不是隐患）。
+//    就地抑制，比在构建日志里留一屏黄更利于发现真问题。
+@SuppressWarnings("unchecked")
 class ExportTaskRecoveryJobTest {
 
     private ExportTaskMapper exportTaskMapper;

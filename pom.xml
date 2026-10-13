@@ -262,15 +262,18 @@
 								</path>
 							</annotationProcessorPaths>
 							<!--
-							  只对**主源码**开 lint（testCompile 不加）。三类取舍都写在这里：
+							  主源码与测试源码都开 lint，类别是 -Xlint:all,-processing,-classfile。取舍写在这里：
 							
 							  ① 为什么不是 -Xlint:all：all 会连带打开 -processing 与 -classfile，
 							     实测 20 条输出里 13 条是纯噪音 —— 前者是"没有处理程序要使用以下任何注释"
 							     （Lombok/Spring 注释必然如此），后者是依赖里的 kotlin.Metadata 造成的
 							     "找不到注释方法"（不是我们的代码）。噪音多了，人就会学会忽略警告。
-							  ② 为什么只给主源码开：测试源码有 38 条（几乎全是 Mockito 的 ArgumentCaptor
-							     泛型转换、泛型数组创建这类写法），一起开等于长期挂着一屏黄。
-							  ③ 为什么不用 -Werror：JDK 升级可能新增 lint 类别，不该因此让构建直接失败。
+							  ② 为什么不用 -Werror：JDK 升级可能新增 lint 类别，不该因此让构建直接失败。
+							  ③ 测试源码一度打算不开（38 条 Mockito 写法），最后还是开了 ——
+							     因为"只对一半源码有效的门禁"等于没有门禁：真问题会藏在没开的那一半里。
+							     那 38 条已全部处理：能改的改（弃用的 JsonNode.fields()、冗余强转），
+							     属于框架 API 固有形态的（ArgumentCaptor.forClass / 匹配器 varargs）
+							     用类级 @SuppressWarnings("unchecked") 就地抑制并写明理由。
 							
 							  起因：SqlValidateUtil 里两处 JSqlParser 4.9 的 @Deprecated 调用（getTableList /
 							  Statements.getStatements）在 IDE 里一直挂黄，而命令行构建完全看不见 ——
@@ -294,6 +297,17 @@
 									<artifactId>lombok</artifactId>
 								</path>
 							</annotationProcessorPaths>
+							<!--
+							  测试源码也开 lint（与主源码同一组类别）。
+							  ⚠️ 同样没有 -Werror，也没打开 -processing / -classfile：
+							  前者是不想让"JDK 升级新增一个 lint 类别"变成构建失败；
+							  后者是纯噪音（Lombok/Spring 注释本来就没有处理器、依赖里带 kotlin.Metadata）。
+							  Mockito 的 ArgumentCaptor / 匹配器 varargs 必然产生 unchecked ——
+							  那几个测试类用类级 @SuppressWarnings("unchecked") 就地抑制，并写明了理由。
+							-->
+							<compilerArgs>
+								<arg>-Xlint:all,-processing,-classfile</arg>
+							</compilerArgs>
 						</configuration>
 					</execution>
 				</executions>

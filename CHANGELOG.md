@@ -93,6 +93,12 @@
   ⚠️ 唯一保留的例外：`RabbitConfig` 的 `Jackson2JsonMessageConverter`（Spring AMQP 4.1 标记 `forRemoval`，
   替代品基于 Jackson 3，换过去要同时引入两套 JSON 栈并改消息体线上格式 —— 登记在案，需单独一轮 + MQ 集成测试）。
   不用 `-Werror`：JDK 升级可能新增 lint 类别，不该因此让构建直接失败。
+  ⭐ **测试源码最后也开了**：原本因为 38 条 Mockito 写法（`ArgumentCaptor.forClass`、匹配器 varargs）
+  打算不开，后来判定"只对一半源码有效的门禁等于没有门禁"—— 那 38 条已全部处理：
+  能改的改（弃用的 `JsonNode.fields()`、一处冗余强转），属于框架 API 固有形态的用类级
+  `@SuppressWarnings("unchecked")` 就地抑制并写明理由。现在主源码 + 测试源码都是 **0 警告**。
+  顺带清掉 **17 条未使用的 import**（13 个文件，其中 `mq/SqlReviewConsumer` 一个文件 4 条）——
+  这一类同样"只有 IDE 能看见"，命令行构建完全不报。
 - ⭐ **编辑数据源时「密码留空 = 不修改」以前根本做不到**：`DbSourceDTO.password` 带 `@NotBlank`（新增和编辑共用同一个 DTO），
   而 `updateDbSource` 又无条件用请求里的密码覆盖密文 —— 而出参**永不下发密码**，所以编辑框天然是空的：
   结果是「只想改个名字，也必须重新输一遍数据库密码」；更糟的是密码框被清空又过了校验时，

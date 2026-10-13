@@ -1,7 +1,6 @@
 package com.example.sqlquery.service.impl;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
-import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.example.sqlquery.cache.DbSourceCacheInvalidator;
 import com.example.sqlquery.dto.DbSourceDTO;

@@ -6,7 +6,6 @@ import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.InnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
 import com.example.sqlquery.dto.DbSourceDTO;
-import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.vo.DbSourceVO;
 import org.apache.ibatis.plugin.Interceptor;

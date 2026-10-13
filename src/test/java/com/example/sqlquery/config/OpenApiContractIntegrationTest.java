@@ -95,7 +95,9 @@ class OpenApiContractIntegrationTest {
     /** 把 paths 下每个 path 的方法名收集起来 —— 一个 path 可能有多个方法。 */
     private List<String> collectOperations(JsonNode root) {
         List<String> operations = new ArrayList<>();
-        root.path("paths").fields().forEachRemaining(pathEntry -> {
+        // ⚠️ 原来是 fields()（返回 Iterator，用 forEachRemaining）；它在 Jackson 里已弃用，
+        //    替代品 properties() 返回 Set<Entry>，直接 forEach 即可。
+        root.path("paths").properties().forEach(pathEntry -> {
             pathEntry.getValue().fieldNames().forEachRemaining(method -> {
                 if (List.of("get", "post", "put", "delete", "patch").contains(method)) {
                     operations.add(method.toUpperCase() + " " + pathEntry.getKey());
@@ -143,8 +145,8 @@ class OpenApiContractIntegrationTest {
     /** 找出所有"说明里带了 ADMIN 标记"的接口。 */
     private List<String> findMarkedAdminOnly(JsonNode root) {
         List<String> marked = new ArrayList<>();
-        root.path("paths").fields().forEachRemaining(pathEntry -> pathEntry.getValue().fields()
-                .forEachRemaining(methodEntry -> {
+        root.path("paths").properties().forEach(pathEntry -> pathEntry.getValue().properties()
+                .forEach(methodEntry -> {
                     if (!List.of("get", "post", "put", "delete", "patch").contains(methodEntry.getKey())) {
                         return;
                     }
@@ -176,8 +178,8 @@ class OpenApiContractIntegrationTest {
         JsonNode root = fetchApiDocs();
         List<String> declared = new ArrayList<>();
 
-        root.path("paths").fields().forEachRemaining(pathEntry -> pathEntry.getValue().fields()
-                .forEachRemaining(methodEntry -> {
+        root.path("paths").properties().forEach(pathEntry -> pathEntry.getValue().properties()
+                .forEach(methodEntry -> {
                     if (!List.of("get", "post", "put", "delete", "patch").contains(methodEntry.getKey())) {
                         return;
                     }
