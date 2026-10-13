@@ -151,6 +151,10 @@ async function main() {
     await cdp.send('Page.enable')
     await cdp.send('Network.enable')
 
+    // 先把「打的是哪个地址、用哪个账号」打出来 —— 账号在本机不存在时，
+    // 后面所有页面断言都会表现为「被重定向到 /login」，不先声明账号就会以为是页面坏了。
+    console.log('')
+    console.log('目标 ' + BASE + ' | 账号 ' + USER + '（可用 SMOKE_USER / SMOKE_PASS 覆盖）')
     console.log('')
     console.log('[1] 未登录时的路由守卫')
     await cdp.goto(BASE + '/query')
@@ -188,7 +192,10 @@ async function main() {
       : ''
     check('登录成功后进入工作台', path2 === '/query',
       path2 !== '/query'
-        ? '实际 ' + path2 + (alertText ? '，页面提示：' + alertText : '（若账号不存在请设 SMOKE_USER / SMOKE_PASS）')
+        // 账号不存在 / 密码不对是这台机器上最常见的失败原因，所以每次都把提示带上，
+        // 而不是只在页面上没有错误文案时才提 —— 那种情况反而更少见。
+        ? '实际 ' + path2 + (alertText ? '，页面提示：' + alertText : '')
+          + '（账号 ' + USER + ' 不存在或密码不对时请设 SMOKE_USER / SMOKE_PASS）'
         : '')
 
     console.log('')

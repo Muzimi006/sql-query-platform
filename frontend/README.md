@@ -45,6 +45,10 @@ node scripts/check-sfc.cjs src/views/X.vue    # 只检查指定文件（可给�
 
 # ② 浏览器冒烟：真浏览器 + 真后端 + 真 dev server（前置：8080 与 5173 都在跑）
 node scripts/browser-smoke.mjs
+
+# 账号默认是 coderead01，本机没有这个账号时用环境变量换一个（密码默认 Probe12345!）
+# PowerShell：$env:SMOKE_USER='smoke_ui'; node scripts/browser-smoke.mjs
+# 账号不存在时的表现是「11 项页面断言全部被重定向到 /login」，不是页面坏了
 ```
 
 | 脚本 | 能证明什么 | 不能证明什么 |

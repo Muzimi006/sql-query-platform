@@ -87,6 +87,8 @@ export async function copyText(text) {
     ta.style.opacity = '0'
     document.body.appendChild(ta)
     ta.select()
+    // execCommand 已被标记废弃，但它是内网 http 部署（非安全上下文，navigator.clipboard 不可用）
+    // 下唯一还能工作的复制方式，因此保留；上面的 Clipboard API 是首选路径。
     document.execCommand('copy')
     document.body.removeChild(ta)
     toastOk('已复制')

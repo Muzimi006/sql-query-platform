@@ -99,6 +99,14 @@
   `@SuppressWarnings("unchecked")` 就地抑制并写明理由。现在主源码 + 测试源码都是 **0 警告**。
   顺带清掉 **17 条未使用的 import**（13 个文件，其中 `mq/SqlReviewConsumer` 一个文件 4 条）——
   这一类同样"只有 IDE 能看见"，命令行构建完全不报。
+- **复查一轮后剩下的三处「像警告其实不是」，都已就地写明结论**：
+  ① `frontend/src/ui.js` 的复制回退用了 `document.execCommand`（已废弃）—— 它是**内网 http 部署**
+  （非安全上下文，`navigator.clipboard` 不存在）下唯一还能用的复制方式，注释里写明「保留是决定，不是遗漏」；
+  ② 浏览器冒烟脚本**启动时打印「目标地址 + 账号」**，登录失败提示也带上账号名 —— 本机没有默认账号
+  `coderead01` 时，11 项页面断言会全部表现成「被重定向到 /login」，不写明账号就会被误判成页面坏了
+  （`frontend/README.md` 同步补了前置说明）；
+  ③ `application.yml` 里 6 个「代码里从未出现的键」（`spring.lifecycle.*`、`management.endpoints.web.exposure.*`、
+  `management.endpoint.health.group.*`）经核对是 **Spring Boot 自己的配置树**，由框架绑定，不是死配置。
 - ⭐ **编辑数据源时「密码留空 = 不修改」以前根本做不到**：`DbSourceDTO.password` 带 `@NotBlank`（新增和编辑共用同一个 DTO），
   而 `updateDbSource` 又无条件用请求里的密码覆盖密文 —— 而出参**永不下发密码**，所以编辑框天然是空的：
   结果是「只想改个名字，也必须重新输一遍数据库密码」；更糟的是密码框被清空又过了校验时，
