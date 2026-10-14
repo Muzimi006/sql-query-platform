@@ -48,6 +48,17 @@
   ⚠️ `mapper` 包**不能动**（`@MapperScan` 是写死的字符串）。验证：`compile` 0 警告、
   纯单元 **391** 通过、全量 **432** 通过（集成用例必须跑 —— 包一动最先坏的是 Spring 扫描）。
   ⚠️ 顺带暴露一个隐性成本：**"同包不写 import"的关系一搬家就会断**，22 个测试类因为访问包私有成员也跟着搬了。
+- ⭐ **第二轮包结构重整（同样只挪包、不改逻辑）**：第一轮解决的是「**找得到**」，这一轮解决的是「**改得动**」——
+  把散在三处的 SQL 知识收成一个新包 **`sql/`**(4)：`SqlValidateUtil`（四道防线）、`SqlType`、
+  `SqlDialect`（方言差异）、`SqlImpactAnalyzer`（影响面）—— 原本分别在 `util/`、`dialect/`、`service/`，
+  改一条防线要在三个包之间跳。另有 6 处归位：`@RestControllerAdvice`（`GlobalExceptionHandler`）从 `exception/` 归 `web/`、
+  `UserRole` 归 `domain/`、MyBatis 填充器与启动期密文迁移 Runner 与 JDBC 元数据读取归 `infra/`。
+  包体量：config 11→**9**、util 6→**4**、common 4→**3**、exception 4→**3**、service 14→**12**、
+  domain 5→**6**、web 3→**4**、infra 3→**6**；`dialect/` 撤销。仍是 123 个源文件 / 23 个包。
+  实测：compile **0 警告**、纯单元 **391** 通过、全量 **432** 通过；9 个旧 FQN 全树 **0 残留**。
+  ⚠️ 两个坑值得记：① **同包引用没有 import**，移动一个类会同时打断「谁引用我」和「我引用谁」两个方向；
+  ② 用 PowerShell 的 `-match` 匹配标识符是**大小写不敏感**的（`sqlType` 会被当成 `SqlType`），要用 `-cmatch`。
+  ⚠️ 副作用：「只挪包」也会动 import 行 ⇒ **13 个文件的行数变了**，逐行导读引用的行号已按位移平移。
 - **`redis_subscriber_up` 的语义写清楚了**（实测发现原注释有误导）：它跟踪的是 **Spring 订阅容器**
   是否在运行，**不是 Redis 是否可达** —— `docker stop` 掉 Redis 后 Lettuce 会无限重连、
   容器始终 running，这个指标全程是 1。**Redis 挂了要看 `RedisDegraded`。**
