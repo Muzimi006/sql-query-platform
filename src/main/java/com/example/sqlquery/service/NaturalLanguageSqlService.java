@@ -1,19 +1,20 @@
 package com.example.sqlquery.service;
 
-import com.example.sqlquery.dialect.SqlDialect;
+import com.example.sqlquery.sql.SqlDialect;
 import com.example.sqlquery.dto.Nl2SqlRequestDTO;
 import com.example.sqlquery.dto.SqlReviewSubmitDTO;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.exception.SqlTypeNotAllowedException;
 import com.example.sqlquery.service.llm.LlmClient;
-import com.example.sqlquery.util.SqlType;
-import com.example.sqlquery.util.SqlValidateUtil;
+import com.example.sqlquery.sql.SqlType;
+import com.example.sqlquery.sql.SqlValidateUtil;
 import com.example.sqlquery.vo.SqlReviewRequestVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.Locale;
+import com.example.sqlquery.infra.SchemaIntrospector;
 
 /**
  * 自然语言 → SQL → <b>审核工单</b>。

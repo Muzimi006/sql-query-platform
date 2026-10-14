@@ -1,4 +1,4 @@
-package com.example.sqlquery.dialect;
+package com.example.sqlquery.sql;
 
 import com.example.sqlquery.exception.BusinessException;
 import org.junit.jupiter.api.DisplayName;

@@ -1,8 +1,7 @@
-package com.example.sqlquery.service;
+package com.example.sqlquery.infra;
 
-import com.example.sqlquery.dialect.SqlDialect;
+import com.example.sqlquery.sql.SqlDialect;
 import com.example.sqlquery.entity.DbSource;
-import com.example.sqlquery.infra.ConnectionManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

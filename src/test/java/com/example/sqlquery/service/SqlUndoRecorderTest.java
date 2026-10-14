@@ -1,6 +1,6 @@
 package com.example.sqlquery.service;
 
-import com.example.sqlquery.dialect.SqlDialect;
+import com.example.sqlquery.sql.SqlDialect;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

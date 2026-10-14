@@ -1,4 +1,4 @@
-package com.example.sqlquery.exception;
+package com.example.sqlquery.web;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -22,6 +22,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import com.example.sqlquery.exception.BusinessException;
 
 /**
  * {@link GlobalExceptionHandler} 的回归测试。

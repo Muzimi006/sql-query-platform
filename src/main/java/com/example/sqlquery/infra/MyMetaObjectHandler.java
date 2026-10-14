@@ -1,4 +1,4 @@
-package com.example.sqlquery.config;
+package com.example.sqlquery.infra;
 
 import com.baomidou.mybatisplus.core.handlers.MetaObjectHandler;
 import org.apache.ibatis.reflection.MetaObject;

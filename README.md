@@ -363,28 +363,28 @@ GET /api/export/{id}/download  →  校验归属 + 任务状态 → 流式写回
 ```text
 src/main/java/com/example/sqlquery        （123 个主源文件）
 ├── controller   (8)   // 接口层：8 个 Controller / 30 个接口
-├── service      (25)  // 业务层：接口 + impl + 域服务（校验/影响面/反向 SQL/权限/LLM）
+├── service      (12)  // 业务层：接口 + 域服务（权限/工单/留痕/导出/LLM）+ service/impl (8) + service/llm (3)
 ├── mapper (8) entity (8) dto (9) vo (8)   // 数据访问与出入参
-├── exception    (4)   // 业务异常 + 它的两个子类 + 全局异常处理器
-├── domain       (5)   // 域状态枚举/常量：数据源、导出、工单、留痕、SQL 来源
-├── common       (4)   // 真正的公共件：统一返回、分页上限、UserContext、角色
+├── exception    (3)   // 业务异常 + 它的两个子类（⚠️ 全局异常处理器已归 web —— 它是 @RestControllerAdvice）
+├── domain       (6)   // 域枚举/常量：数据源、导出、工单、留痕、SQL 来源、角色
+├── common       (3)   // 跨层公共件：统一返回、分页上限、UserContext（角色已归 domain）
 │
 ├── job          (5)   // 后台任务：两个补偿任务、文件清理、保留策略、死信深度快照
 ├── mq           (5)   // 消息：拓扑、投递确认、两个消费者
-├── web          (3)   // HTTP 横切：JWT 拦截器、拦截器注册、审计切面
-├── infra        (3)   // 有状态的运行时组件：连接池注册表、熔断器、限流
+├── web          (4)   // HTTP 横切：JWT 拦截器、拦截器注册、审计切面、全局异常处理器
+├── infra        (6)   // 有状态运行时组件：连接池注册表、熔断器、限流、JDBC 元数据读取、MyBatis 填充器、密文迁移 Runner
 ├── guard        (2)   // 并发闸门（查询 / NL2SQL）
 ├── cache        (3)   // 数据源失效广播（发布 / 订阅 / 订阅容器看门狗）
 ├── tx           (3)   // 请求级平台库写缓冲（合并写：审计 + 历史一个事务提交）
 ├── metrics      (1)   // 指标定义（集中一处 —— 指标名是对外契约）
-├── dialect      (1)   // 方言定义（连接串 / 驱动 / 危险函数 / 系统库 / 专有语法）
-├── util         (6)   // **无状态**工具：JWT、AES、JDBC URL、客户端 IP、SQL 校验、语句类型
-└── config       (11)  // 纯 Spring 装配 + @ConfigurationProperties + 启动期 Runner
+├── sql          (4)   // ⭐ SQL 这一层：方言（连接串/驱动/危险函数/系统库/专有语法）、语句类型、四道防线校验、影响面分析
+├── util         (4)   // **无状态**工具：JWT、AES、JDBC URL、客户端 IP
+└── config        (9)  // 纯 Spring 装配 + @ConfigurationProperties
 ```
 
 > ⭐ **分包的判据只有一条：这个类在运行时做什么。**
 > `@Scheduled` → `job`；`@RabbitListener` / 消息拓扑 → `mq`；面向 HTTP 的横切（拦截器、切面）→ `web`；
-> 有状态、要注入的运行时组件 → `infra`；无状态纯函数 → `util`；域状态 → `domain`；
+> 有状态、要注入的运行时组件 → `infra`；无状态纯函数 → `util`；域状态 → `domain`；SQL 方言/校验/影响面 → `sql`；
 > `config` 只留"装配"本身。**这个划分不是审美问题**：以前 5 个定时任务、2 个消费者、1 个切面都躺在 `config` 里，
 > 找"导出重试逻辑"的人不会想到去 `config` 找（详见问题修复档案 Z-01）。
 

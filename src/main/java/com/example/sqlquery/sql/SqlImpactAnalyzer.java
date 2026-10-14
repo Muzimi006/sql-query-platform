@@ -1,6 +1,5 @@
-package com.example.sqlquery.service;
+package com.example.sqlquery.sql;
 
-import com.example.sqlquery.dialect.SqlDialect;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.infra.ConnectionManager;
 import com.fasterxml.jackson.databind.JsonNode;

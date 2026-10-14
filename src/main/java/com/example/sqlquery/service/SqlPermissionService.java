@@ -1,7 +1,7 @@
 package com.example.sqlquery.service;
 
 import com.example.sqlquery.config.SqlPermissionProperties;
-import com.example.sqlquery.util.SqlType;
+import com.example.sqlquery.sql.SqlType;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 

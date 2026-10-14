@@ -1,4 +1,4 @@
-package com.example.sqlquery.exception;
+package com.example.sqlquery.web;
 
 import com.example.sqlquery.common.Result;
 import jakarta.validation.ConstraintViolation;
@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+import com.example.sqlquery.exception.BusinessException;
 
 /**
  * 全局异常 → 统一响应体的翻译层。

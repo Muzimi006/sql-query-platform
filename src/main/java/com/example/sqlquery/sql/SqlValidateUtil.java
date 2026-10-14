@@ -1,6 +1,5 @@
-package com.example.sqlquery.util;
+package com.example.sqlquery.sql;
 
-import com.example.sqlquery.dialect.SqlDialect;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.exception.SqlTypeNotAllowedException;
 import net.sf.jsqlparser.JSQLParserException;

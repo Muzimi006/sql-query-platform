@@ -1,4 +1,4 @@
-package com.example.sqlquery.util;
+package com.example.sqlquery.sql;
 
 public enum SqlType {
     SELECT,

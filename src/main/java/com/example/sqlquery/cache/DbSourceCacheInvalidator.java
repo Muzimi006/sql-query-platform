@@ -1,7 +1,7 @@
 package com.example.sqlquery.cache;
 
 import com.example.sqlquery.metrics.SqlPlatformMetrics;
-import com.example.sqlquery.service.SchemaIntrospector;
+import com.example.sqlquery.infra.SchemaIntrospector;
 import com.example.sqlquery.infra.ConnectionManager;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;

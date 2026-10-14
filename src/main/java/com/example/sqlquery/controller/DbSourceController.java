@@ -3,7 +3,7 @@ package com.example.sqlquery.controller;
 import com.example.sqlquery.common.PageConstants;
 import com.example.sqlquery.common.Result;
 import com.example.sqlquery.common.UserContext;
-import com.example.sqlquery.dialect.SqlDialect;
+import com.example.sqlquery.sql.SqlDialect;
 import com.example.sqlquery.dto.DbSourceDTO;
 
 import com.example.sqlquery.exception.BusinessException;

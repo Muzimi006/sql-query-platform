@@ -1,6 +1,6 @@
 package com.example.sqlquery.service;
 
-import com.example.sqlquery.common.UserRole;
+import com.example.sqlquery.domain.UserRole;
 import com.example.sqlquery.exception.BusinessException;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;

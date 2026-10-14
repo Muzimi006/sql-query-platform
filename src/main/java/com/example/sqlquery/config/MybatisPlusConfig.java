@@ -11,6 +11,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import javax.sql.DataSource;
+import com.example.sqlquery.infra.MyMetaObjectHandler;
 
 /**
  * MyBatis-Plus 的手工装配。

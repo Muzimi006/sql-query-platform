@@ -1,4 +1,4 @@
-package com.example.sqlquery.config;
+package com.example.sqlquery.infra;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.example.sqlquery.cache.DbSourceCacheInvalidator;

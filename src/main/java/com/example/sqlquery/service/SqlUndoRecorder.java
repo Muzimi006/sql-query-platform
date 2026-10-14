@@ -1,7 +1,7 @@
 package com.example.sqlquery.service;
 
 import com.example.sqlquery.domain.UndoStatus;
-import com.example.sqlquery.dialect.SqlDialect;
+import com.example.sqlquery.sql.SqlDialect;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.infra.ConnectionManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -13,6 +13,7 @@ import net.sf.jsqlparser.statement.update.Update;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.io.Serial;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
@@ -162,6 +163,7 @@ public class SqlUndoRecorder {
      */
     static class SkipCaptureException extends RuntimeException {
 
+        @Serial
         private static final long serialVersionUID = 1L;
 
         SkipCaptureException(String message) {

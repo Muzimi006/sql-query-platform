@@ -1,6 +1,6 @@
 package com.example.sqlquery.exception;
 
-import com.example.sqlquery.util.SqlType;
+import com.example.sqlquery.sql.SqlType;
 
 import java.util.Set;
 

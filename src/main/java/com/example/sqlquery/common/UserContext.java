@@ -1,5 +1,7 @@
 package com.example.sqlquery.common;
 
+import com.example.sqlquery.domain.UserRole;
+
 public class UserContext {
 
     private static final ThreadLocal<Long> HOLDER = new ThreadLocal<>();

@@ -1,12 +1,12 @@
 package com.example.sqlquery.service;
 
-import com.example.sqlquery.dialect.SqlDialect;
+import com.example.sqlquery.sql.SqlDialect;
 import com.example.sqlquery.dto.Nl2SqlRequestDTO;
 import com.example.sqlquery.dto.SqlReviewSubmitDTO;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.exception.BusinessException;
 import com.example.sqlquery.service.llm.LlmClient;
-import com.example.sqlquery.util.SqlType;
+import com.example.sqlquery.sql.SqlType;
 import com.example.sqlquery.vo.SqlReviewRequestVO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.example.sqlquery.infra.SchemaIntrospector;
 
 /**
  * 自然语言 → SQL → 工单。

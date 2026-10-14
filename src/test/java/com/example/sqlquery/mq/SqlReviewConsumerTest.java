@@ -16,7 +16,7 @@ import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import com.example.sqlquery.service.SqlPermissionService;
 import com.example.sqlquery.service.SqlUndoRecorder;
 import com.example.sqlquery.infra.ConnectionManager;
-import com.example.sqlquery.util.SqlType;
+import com.example.sqlquery.sql.SqlType;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;

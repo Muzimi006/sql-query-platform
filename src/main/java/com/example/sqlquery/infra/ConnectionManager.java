@@ -1,6 +1,6 @@
 package com.example.sqlquery.infra;
 
-import com.example.sqlquery.dialect.SqlDialect;
+import com.example.sqlquery.sql.SqlDialect;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.metrics.SqlPlatformMetrics;
 // ⚠️ 这个 import 是"挪包"时才补上的：AesUtil 和它以前同在 util 包，不需要 import。

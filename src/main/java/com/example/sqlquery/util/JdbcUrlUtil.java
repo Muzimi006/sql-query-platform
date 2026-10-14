@@ -1,6 +1,6 @@
 package com.example.sqlquery.util;
 
-import com.example.sqlquery.dialect.SqlDialect;
+import com.example.sqlquery.sql.SqlDialect;
 import com.example.sqlquery.entity.DbSource;
 
 /**

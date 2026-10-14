@@ -1,8 +1,8 @@
 package com.example.sqlquery.service;
 
-import com.example.sqlquery.common.UserRole;
+import com.example.sqlquery.domain.UserRole;
 import com.example.sqlquery.config.SqlPermissionProperties;
-import com.example.sqlquery.util.SqlType;
+import com.example.sqlquery.sql.SqlType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

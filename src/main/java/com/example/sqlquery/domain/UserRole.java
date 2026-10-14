@@ -1,4 +1,4 @@
-package com.example.sqlquery.common;
+package com.example.sqlquery.domain;
 
 /**
  * 用户角色。

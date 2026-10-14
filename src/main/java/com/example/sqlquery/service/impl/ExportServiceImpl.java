@@ -1,7 +1,7 @@
 package com.example.sqlquery.service.impl;
 
 import com.example.sqlquery.domain.ExportStatus;
-import com.example.sqlquery.dialect.SqlDialect;
+import com.example.sqlquery.sql.SqlDialect;
 import com.example.sqlquery.mq.RabbitConfig;
 import com.example.sqlquery.service.SqlPermissionService;
 import com.example.sqlquery.dto.ExportTaskDTO;
@@ -12,9 +12,9 @@ import com.example.sqlquery.metrics.SqlPlatformMetrics;
 import com.example.sqlquery.mapper.ExportTaskMapper;
 import com.example.sqlquery.service.DbSourceService;
 import com.example.sqlquery.service.ExportService;
-import com.example.sqlquery.util.SqlType;
+import com.example.sqlquery.sql.SqlType;
 import com.example.sqlquery.mq.RabbitPublishConfirmer;
-import com.example.sqlquery.util.SqlValidateUtil;
+import com.example.sqlquery.sql.SqlValidateUtil;
 import com.example.sqlquery.vo.ExportTaskVO;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.springframework.amqp.AmqpException;

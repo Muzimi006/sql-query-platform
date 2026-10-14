@@ -1,8 +1,7 @@
-package com.example.sqlquery.service;
+package com.example.sqlquery.infra;
 
-import com.example.sqlquery.dialect.SqlDialect;
+import com.example.sqlquery.sql.SqlDialect;
 import com.example.sqlquery.entity.DbSource;
-import com.example.sqlquery.infra.ConnectionManager;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 

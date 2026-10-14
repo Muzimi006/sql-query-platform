@@ -1,7 +1,7 @@
 package com.example.sqlquery.config;
 
-import com.example.sqlquery.common.UserRole;
-import com.example.sqlquery.util.SqlType;
+import com.example.sqlquery.domain.UserRole;
+import com.example.sqlquery.sql.SqlType;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 

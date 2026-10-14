@@ -39,7 +39,7 @@ import org.springframework.web.bind.annotation.RestController;
  * 我先按直觉写了 security = {}，测试断言"恰好这三个接口声明了 security: []"，
  * 直接变红并报出实际是空集合。
  */
-public class AuthController {
+public class  AuthController {
 
     /**
      * 登录限流的两个维度。

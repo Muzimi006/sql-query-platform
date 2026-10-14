@@ -1,7 +1,7 @@
 package com.example.sqlquery.service.impl;
 
 import com.example.sqlquery.common.UserContext;
-import com.example.sqlquery.common.UserRole;
+import com.example.sqlquery.domain.UserRole;
 import com.example.sqlquery.dto.QueryDTO;
 import com.example.sqlquery.entity.DbSource;
 import com.example.sqlquery.exception.BusinessException;
@@ -12,7 +12,7 @@ import com.example.sqlquery.service.SqlPermissionService;
 import com.example.sqlquery.infra.ConnectionManager;
 import com.example.sqlquery.infra.DbSourceCircuitBreaker;
 import com.example.sqlquery.guard.QueryConcurrencyGuard;
-import com.example.sqlquery.util.SqlType;
+import com.example.sqlquery.sql.SqlType;
 import com.example.sqlquery.vo.QueryVO;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
