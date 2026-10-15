@@ -28,10 +28,15 @@ import org.springframework.context.annotation.Configuration;
  * （Swagger UI 上的 "Authorize" 按钮就是给这件事用的）。
  *
  * <p>但"接口面貌"本身对攻击者是有价值的（省掉了枚举和试错的成本）。
- * 所以这是一个<b>可关闭</b>的开关，而不是写死的：
- * 生产环境把 {@code springdoc.api-docs.enabled} 置为 {@code false} 即可。
- * 这与项目里其它默认值（NL2SQL 默认关、DDL 默认谁都不给、监控端点只监听本机）
- * 是同一个取向：<b>能关的东西要能关，并且关法写在明面上。</b>
+ * 所以它必须<b>默认关闭</b> —— 2026-10 起 {@code springdoc.api-docs.enabled} 与
+ * {@code springdoc.swagger-ui.enabled} 的默认值都是 <b>{@code false}</b>，
+ * 本地要看文档就设 {@code SPRINGDOC_ENABLED=true} 再启动。
+ *
+ * <p>⚠️ <b>原来的默认值是 {@code true}</b>（"可关，但默认开着"）—— 那等于把"接口面貌默认公开"
+ * 当成默认行为，只有读过 yml 的人才知道要关。这与项目里其它默认值（NL2SQL 默认关、
+ * DDL 默认谁都不给、留痕清理默认关、监控端点只监听本机）的方向相反，所以对齐成
+ * "<b>默认不暴露，要用的人显式打开</b>"；这条不变式由 {@code OpenApiExposureConfigTest} 守着，
+ * 不靠注释。—— 起因与实测见问题修复档案 <b>W-07</b>。
  *
  * <h2>为什么要显式声明 Bearer 安全方案</h2>
  *

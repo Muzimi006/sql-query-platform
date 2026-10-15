@@ -22,6 +22,18 @@ public class UserServiceImpl extends ServiceImpl<UserMapper,User> implements Use
     private final AdminRegistrationPolicy adminRegistrationPolicy;
     private final SqlPlatformMetrics metrics;
 
+    /**
+     * 一条"永远匹配不上"的哈希，只用来给"用户不存在"这条路径**凑出同样的耗时**。
+     *
+     * <p>懒生成而不是启动时生成：哈希必须用**当前配置的**成本因子（否则时间对不齐），
+     * 所以只能由注入的 encoder 生成；而它只在"真的有人用不存在的用户名登录"时才用得上，
+     * 放在启动时等于让每次启动都白付一次 BCrypt。
+     *
+     * <p>{@code volatile}：多个登录线程可能同时第一次用到它，重复生成一次无害，
+     * 但不能让别的线程读到半初始化的值。
+     */
+    private volatile String dummyHash;
+
     public UserServiceImpl(PasswordEncoder passwordEncoder,
                            AdminRegistrationPolicy adminRegistrationPolicy,
                            SqlPlatformMetrics metrics) {
@@ -52,7 +64,15 @@ public class UserServiceImpl extends ServiceImpl<UserMapper,User> implements Use
     @Override
     public UserVO login(String username, String password) {
         User user = getByUsername(username);
-        if (user == null || !passwordEncoder.matches(password,user.getPassword())) {
+        if (user == null) {
+            // ⚠️ 用户不存在时**也要**做一次哈希比对，只为消耗掉同样的时间（见 dummyHash()）。
+            //    原来的写法是 `user == null || !matches(...)` —— `||` 会短路，
+            //    于是这条路径不做 BCrypt，实测 17ms vs 100ms：
+            //    **统一错误文案挡住了"按文案枚举"，挡不住"按响应耗时枚举"**。
+            passwordEncoder.matches(password, dummyHash());
+            throw new BusinessException("用户名不存在或密码错误");
+        }
+        if (!passwordEncoder.matches(password, user.getPassword())) {
             throw new BusinessException("用户名不存在或密码错误");
         }
 
@@ -110,6 +130,38 @@ public class UserServiceImpl extends ServiceImpl<UserMapper,User> implements Use
             metrics.recordPasswordRehashFailed();
             log.warn("密码哈希升级失败（**登录本身不受影响**）。userId={}", user.getId(), e);
         }
+    }
+
+    /**
+     * 取一条"永远匹配不上"的哈希，用来把"用户不存在"这条路径的耗时对齐到"密码错"那条。
+     *
+     * <h2>为什么需要它</h2>
+     *
+     * <p>登录的错误文案是统一的（「用户名不存在或密码错误」），但**耗时没有统一**：
+     * 用户不存在时若直接短路，就不做 BCrypt，两条路径差一个数量级
+     * （本机实测：不存在 ≈ 17ms，密码错 ≈ 100ms，成本因子 10）。
+     * 拿一份用户名字典打一遍、按响应时间分类，就能枚举出哪些用户名存在 ——
+     * 这是"信息泄露"，不是"能在库里干坏事"，但它省掉了攻击者的试错成本。
+     *
+     * <p>业界做法一致：Spring Security 的 {@code DaoAuthenticationProvider} 就有
+     * {@code mitigateAgainstTimingAttack} 与"用户不存在时也拿假哈希比一次"的实现。
+     *
+     * <h2>⚠️ 它不是防线的主体（必须说清楚）</h2>
+     *
+     * <p>真正限制"每秒能做多少次 BCrypt"的是**登录限流**，而且它在 BCrypt 之前：
+     * IP 20 次 + 账号 10 次 / 60 秒（见 {@code AuthController}）。
+     * 这里补的是**信息泄露的那一半**，代价是"不存在的用户名也要付一次哈希"——
+     * 这是刻意的：拿一次哈希换掉一条枚举通道，而且它本来就在限流的预算之内。
+     *
+     * @return BCrypt 哈希串；同一次进程内复用同一条（第一次调用时生成）
+     */
+    private String dummyHash() {
+        String cached = dummyHash;
+        if (cached == null) {
+            cached = passwordEncoder.encode("timing-equalizer-placeholder");
+            dummyHash = cached;
+        }
+        return cached;
     }
 
     @Override

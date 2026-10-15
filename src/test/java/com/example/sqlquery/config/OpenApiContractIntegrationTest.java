@@ -29,7 +29,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <ul>
  *   <li>依赖版本和 Spring Boot 大版本不匹配（springdoc 2.x ↔ Boot 3、3.x ↔ Boot 4）——
  *       <b>不会编译失败</b>，会在启动阶段崩，或者更糟：静默地少生成一部分；</li>
- *   <li>有人把 `springdoc.api-docs.enabled` 关掉之后忘了打开；</li>
+ *   <li>有人把 `springdoc.api-docs.enabled` 关掉之后忘了打开（本类用 {@code properties} 显式打开，
+ *       所以这句话仍然成立：这里验的是"打开之后它能不能工作"）；</li>
  *   <li>新增了接口，但 {@code 11-接口清单与契约.md} 没跟着更新。</li>
  * </ul>
  *
@@ -40,7 +41,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * "这个端点**真的被 serve 出来**了"，MockMvc 会绕过一部分 MVC 装配。
  */
 @Tag("integration")
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+// ⚠️ 必须显式打开接口文档：application.yml 里 springdoc 的默认值是 false（2026-10 改的，
+//    见 config/OpenApiExposureConfigTest）。本类验的恰恰是"文档端点真的被 serve 出来了"，
+//    所以这里把开关打开 —— 测试要打开它要验的东西，而不是依赖某个碰巧的默认值。
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = {"springdoc.api-docs.enabled=true", "springdoc.swagger-ui.enabled=true"})
 class OpenApiContractIntegrationTest {
 
     /**

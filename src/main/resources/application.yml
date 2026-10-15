@@ -67,23 +67,31 @@ server:
   shutdown: graceful
 
 # 接口文档（OpenAPI 3 + Swagger UI）
-# 打开：http://localhost:8080/swagger-ui.html   ← 会跳到 /swagger-ui/index.html
-# 原始 JSON：http://localhost:8080/v3/api-docs
+# 本地要看文档：设 SPRINGDOC_ENABLED=true 再启动，然后打开
+#   http://localhost:8080/swagger-ui.html   ← 会跳到 /swagger-ui/index.html
+#   http://localhost:8080/v3/api-docs       ← 原始 JSON
 #
 # ⚠️ 安全边界：JwtInterceptor 只覆盖 /api/**，而上面这两个路径**不在这个范围里** ——
-#    也就是说接口文档是**公开可访问**的。
+#    拦截器根本不会匹配它们（实测：不设 SPRINGDOC_ENABLED 时，v3/api-docs 返回的是
+#    「接口不存在」——见 web/GlobalExceptionHandler 对 NoResourceFoundException 的处理）。
 #    它泄漏的是"接口的面貌"（路径、参数名、DTO 字段名、校验规则），**不是数据**：
 #    真正的业务接口仍然要 JWT，没 token 一样调不通（Swagger UI 上的 Authorize 按钮就是干这个的）。
-#    但接口面貌本身对攻击者有价值（省掉枚举和试错的成本），所以它做成**可关**的开关：
-#    生产环境把 SPRINGDOC_ENABLED 设为 false 即可。
-#    这与项目里其它默认值的取向一致 —— NL2SQL 默认关、DDL 默认谁都不给、监控端点只监听本机。
+#    但接口面貌本身对攻击者有价值（省掉枚举和试错的成本）。
+#
+# ⭐ **所以默认值是 false（2026-10 改）**：以前默认 true，等于"默认把接口面貌公开出去"，
+#    只有读过这份 yml 的人才知道要关。这与项目里其它默认值的取向不一致 ——
+#    NL2SQL 默认关、DDL 默认谁都不给、留痕清理默认关、监控端点只监听本机，
+#    都是"**默认不暴露，要用的人显式打开**"。这一处以前是例外，现在对齐了。
+#    （配置型不变式由 config/OpenApiExposureConfigTest 守着，不靠读注释。）
 #
 # ⚠️ 依赖版本必须跟着 Spring Boot 的大版本走：springdoc 3.x 面向 Boot 4，2.x 面向 Boot 3。
 #    装错版本会在启动阶段以"Bean 创建失败 / 类找不到"的形式崩掉，而不是编译错误。
 springdoc:
   api-docs:
-    enabled: ${SPRINGDOC_ENABLED:true}
+    enabled: ${SPRINGDOC_ENABLED:false}
   swagger-ui:
+    # 同一个开关：文档页面也不该默认挂出去（api-docs 关了它也没内容可读，但页面本身也是信息）
+    enabled: ${SPRINGDOC_ENABLED:false}
     # 接口与标签都按字母序，方便在几十个接口里找
     operations-sorter: alpha
     tags-sorter: alpha

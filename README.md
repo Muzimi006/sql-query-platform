@@ -600,10 +600,10 @@ CSV 导出编码、导出文件清理、数据源入口与状态校验、并发�
 > **http://localhost:8080/swagger-ui.html**（原始 JSON 在 `/v3/api-docs`）。
 > 它是从代码自动生成的，所以**不会和实现漂移**；这张表只是给不方便起服务的人看的速查。
 >
-> ⚠️ **安全边界**：`JwtInterceptor` 只覆盖 `/api/**`，而接口文档的两个路径不在这个范围里 ——
-> 也就是说它是**公开可访问**的。泄漏的是"接口的面貌"（路径、参数名、DTO 字段），
-> **不是数据**（业务接口仍然要 JWT）。生产环境请用
-> `SPRINGDOC_ENABLED=false` 关掉，理由见 application.yml 里的注释。
+> ⚠️ **接口文档默认关闭**（2026-10 起）：`JwtInterceptor` 只覆盖 `/api/**`，而这两个路径
+> **不在这个范围里**（拦截器根本不匹配它们）—— 只要它被打开，**不登录就能读到全部接口契约**。
+> 所以默认值是 `false`，要看文档先设 **`SPRINGDOC_ENABLED=true`** 再启动；
+> 这条不变式由 `OpenApiExposureConfigTest` 守着（改回默认开会先让测试变红）。
 >
 > ⚠️ 另一个坑：**springdoc 版本必须跟 Spring Boot 的大版本走** ——
 > 本项目的依赖是 `org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.1`
