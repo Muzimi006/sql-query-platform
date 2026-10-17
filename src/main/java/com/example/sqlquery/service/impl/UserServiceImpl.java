@@ -14,6 +14,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.util.UUID;
+
 @Slf4j
 @Service
 public class UserServiceImpl extends ServiceImpl<UserMapper,User> implements UserService {
@@ -69,6 +71,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper,User> implements Use
             //    原来的写法是 `user == null || !matches(...)` —— `||` 会短路，
             //    于是这条路径不做 BCrypt，实测 17ms vs 100ms：
             //    **统一错误文案挡住了"按文案枚举"，挡不住"按响应耗时枚举"**。
+            //    ⚠️ 这个返回值**必须丢弃**：假哈希不是认证依据，它只负责"烧掉同样的时间"。
+            //    （万一被"优化"成用返回值判断，就是一条绕过 —— 用例 LoginUserNotFoundTest 锁住了这一点。）
             passwordEncoder.matches(password, dummyHash());
             throw new BusinessException("用户名不存在或密码错误");
         }
@@ -153,12 +157,22 @@ public class UserServiceImpl extends ServiceImpl<UserMapper,User> implements Use
      * 这里补的是**信息泄露的那一半**，代价是"不存在的用户名也要付一次哈希"——
      * 这是刻意的：拿一次哈希换掉一条枚举通道，而且它本来就在限流的预算之内。
      *
+     * <h2>⚠️ 明文必须是**随机**的，不能是固定串</h2>
+     *
+     * <p>最早这里用的是写死的字面量（{@code timing-equalizer-placeholder}）。那样在**理论上**存在"碰对"：
+     * 明文就写在源码里，攻击者把它当密码提交，{@code matches} 就会返回 {@code true}。
+     * 现在虽然**返回值被丢弃、碰对了也拿不到任何东西**，但"安全依赖一条看不见的纪律"是脆的 ——
+     * 所以改成**每次进程启动随机生成**（{@code UUID}，不落日志）：没有既定的明文，碰对在计算上不可能。
+     *
+     * <p>配套用例锁住两条不变式：① 即使 {@code matches} 返回 true，登录也必须抛出同一句文案；
+     * ② 假哈希的明文不能是任何**固定串**（用例拿旧的固定串去比对，必须失败）。
+     *
      * @return BCrypt 哈希串；同一次进程内复用同一条（第一次调用时生成）
      */
-    private String dummyHash() {
+    String dummyHash() {
         String cached = dummyHash;
         if (cached == null) {
-            cached = passwordEncoder.encode("timing-equalizer-placeholder");
+            cached = passwordEncoder.encode(UUID.randomUUID().toString());
             dummyHash = cached;
         }
         return cached;

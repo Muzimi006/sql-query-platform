@@ -12,6 +12,7 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -93,6 +94,31 @@ class LoginUserNotFoundTest {
 
         // encode 只该被调用一次：第一次生成假哈希，之后一直复用
         verify(passwordEncoder, times(1)).encode(anyString());
+    }
+
+    @Test
+    @DisplayName("⭐ 即使假哈希比对「碰对」返回 true，登录也必须照样抛出同一句文案")
+    void dummyHashHitMustNeverGrantLogin() {
+        doReturn(null).when(userService).getByUsername(anyString());
+        // 刻意让假哈希比对返回 true：模拟「假哈希的明文被猜中」这个极端情况
+        doReturn(true).when(passwordEncoder).matches(anyString(), anyString());
+
+        BusinessException e = assertThrows(BusinessException.class,
+                () -> userService.login("ghost", RAW_PASSWORD));
+
+        assertEquals("用户名不存在或密码错误", e.getMessage(),
+                "假哈希的返回值只能用来烧时间，绝不能作为认证依据 —— 一旦被拿去判断就是绕过");
+    }
+
+    @Test
+    @DisplayName("假哈希的明文必须是随机的：拿任何固定串去比对都不能命中")
+    void dummyHashPlaintextMustNotBeAnyFixedLiteral() {
+        // 用真实 encoder（本类的 passwordEncoder 是 spy，matches 未被 stub，会委派给真实实现）
+        String dummy = userService.dummyHash();
+
+        assertFalse(passwordEncoder.matches("timing-equalizer-placeholder", dummy),
+                "旧实现把明文写死在源码里，理论上可以被「碰对」；现在必须是随机 UUID，不能命中任何固定串");
+        assertFalse(passwordEncoder.matches("", dummy), "空串也不能命中");
     }
 
     private User userWithPassword(String rawPassword) {
