@@ -183,7 +183,12 @@ public class SqlReviewConsumer {
                 // 和数据库时区不一致，卡死判定就会整体偏掉（该失败的永远不失败，
                 // 或者刚认领就被判超时）。**同一列必须只有一个写时钟。**
                 .set(SqlReviewRequest::getUpdatedAt, LocalDateTime.now()));
-        return affected == 1;
+        boolean claimed = affected == 1;
+        if (claimed) {
+            // ⭐ 认领成功次数 = 执行次数（表上的 executed_at / affected_rows 会被覆盖，靠不住）
+            metrics.recordTaskClaimed(SqlPlatformMetrics.LINK_REVIEW);
+        }
+        return claimed;
     }
 
     /**
@@ -238,6 +243,7 @@ public class SqlReviewConsumer {
             persistUndo(reviewId, result.capture());
 
             finish(reviewId, ReviewStatus.EXECUTED, result.affectedRows(), null);
+            metrics.recordTaskExecuted(SqlPlatformMetrics.LINK_REVIEW, "success");
 
             log.info("工单执行成功。reviewId={}, sqlType={}, affectedRows={}, undo={}",
                     reviewId, validation.sqlType(), result.affectedRows(),
@@ -259,6 +265,7 @@ public class SqlReviewConsumer {
 
             // 只取 message 不取堆栈：error_message 是给用户看的字段，堆栈在日志里
             finish(reviewId, ReviewStatus.FAILED, null, why + brief(e.getMessage()));
+            metrics.recordTaskExecuted(SqlPlatformMetrics.LINK_REVIEW, "failed");
         }
     }
 

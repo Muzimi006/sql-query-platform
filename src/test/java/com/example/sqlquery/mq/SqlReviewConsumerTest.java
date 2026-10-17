@@ -150,6 +150,18 @@ class SqlReviewConsumerTest {
     }
 
     @Test
+    @DisplayName("⭐ 认领成功必须记一次认领计数；认领失败不记 —— 这是「执行了几次」的唯一可靠依据")
+    void claimSuccessMustBeCounted() {
+        Mockito.when(reviewMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.any())).thenReturn(1);
+        consumer.tryClaim(1L);
+        Mockito.verify(metrics).recordTaskClaimed(SqlPlatformMetrics.LINK_REVIEW);
+
+        Mockito.reset(metrics);
+        Mockito.when(reviewMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.any())).thenReturn(0);
+        consumer.tryClaim(1L);
+        Mockito.verify(metrics, Mockito.never()).recordTaskClaimed(ArgumentMatchers.anyString());
+    }
+    @Test
     @DisplayName("认领的 WHERE 必须要求当前状态是 APPROVED")
     void claimMustRequireApprovedStatus() {
         Mockito.when(reviewMapper.update(ArgumentMatchers.isNull(), ArgumentMatchers.any())).thenReturn(1);

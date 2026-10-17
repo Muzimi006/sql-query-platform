@@ -336,7 +336,12 @@ public class ExportConsumer {
                 //    而不是"创建之后过了多久" —— 后者会把排队时间也算进去，
                 //    队列积压时正常任务会被误判成卡死。见 ExportTaskRecoveryJob。
                 .set(ExportTask::getStartedAt, LocalDateTime.now()));
-        return affected == 1;
+        boolean claimed = affected == 1;
+        if (claimed) {
+            // ⭐ 认领成功次数 = 执行次数（export_task 上的字段会被覆盖，靠不住）
+            metrics.recordTaskClaimed(SqlPlatformMetrics.LINK_EXPORT);
+        }
+        return claimed;
     }
 
     /**
@@ -385,6 +390,7 @@ public class ExportConsumer {
             moveAtomically(tmp, file);
 
             finish(taskId, ExportStatus.SUCCESS, file.getPath(), rowCount, null);
+            metrics.recordTaskExecuted(SqlPlatformMetrics.LINK_EXPORT, "success");
         } catch (Exception e) {
             log.error("导出任务执行失败。taskId={}", taskId, e);
 
@@ -396,6 +402,7 @@ public class ExportConsumer {
 
             // 只取消息不取堆栈：error_message 是要展示给用户看的字段，堆栈在日志里已经有了
             finish(taskId, ExportStatus.FAILED, null, null, e.getMessage());
+            metrics.recordTaskExecuted(SqlPlatformMetrics.LINK_EXPORT, "failed");
         }
     }
 

@@ -443,6 +443,46 @@ public class SqlPlatformMetrics {
     public static final String LINK_REVIEW = "review";
 
     /**
+     * 任务被**原子认领成功**的次数，按链路分标签（`link=review | export`）。
+     *
+     * <h2>⚠️ 为什么这个计数比查表可靠</h2>
+     *
+     * <p>「同一条工单/导出被执行了几次」<b>看表看不出来</b>：
+     * `executed_at` / `affected_rows` 会被最后一次执行覆盖，前镜像表也是"重跑就覆盖"。
+     * 而认领是**条件更新**（`APPROVED → EXECUTING`），一次执行有且只有一次成功认领 ——
+     * 所以：<b>认领成功次数 = 执行次数</b>，这是排查"重复执行"时唯一不会骗人的计数。
+     */
+    public static final String TASK_CLAIMED = "mq.task.claimed";
+
+    /**
+     * 任务**执行完成**的次数，按链路 + 结果分标签（`link` + `outcome=success|failed`）。
+     *
+     * <p>和 {@link #TASK_CLAIMED} 配合能立刻看出两件事：
+     * ① 认领数 &gt; 执行完成数 → 有任务认领后没跑完（进程被 kill / 卡住）；
+     * ② 同一 `link` 的执行完成数持续大于工单数 → 重复执行。
+     */
+    public static final String TASK_EXECUTED = "mq.task.executed";
+
+    /**
+     * 记录一次「认领成功」。
+     *
+     * @param link {@link #LINK_EXPORT} 或 {@link #LINK_REVIEW}
+     */
+    public void recordTaskClaimed(String link) {
+        registry.counter(TASK_CLAIMED, TAG_LINK, link).increment();
+    }
+
+    /**
+     * 记录一次「执行完成」。
+     *
+     * @param link    {@link #LINK_EXPORT} 或 {@link #LINK_REVIEW}
+     * @param outcome 成功传 {@code success}，失败传 {@code failed}
+     */
+    public void recordTaskExecuted(String link, String outcome) {
+        registry.counter(TASK_EXECUTED, TAG_LINK, link, TAG_OUTCOME, outcome).increment();
+    }
+
+    /**
      * 记录一次生产者侧投递失败。
      *
      * @param link {@link #LINK_EXPORT} 或 {@link #LINK_REVIEW}

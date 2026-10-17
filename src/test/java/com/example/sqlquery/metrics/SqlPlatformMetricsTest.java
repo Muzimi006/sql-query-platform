@@ -247,6 +247,36 @@ class SqlPlatformMetricsTest {
         assertNull(registry.find(SqlPlatformMetrics.PUBLISH_FAILED).counter(),
                 "没有任何投递失败时，这个计数器不该存在（更不该大于 0）");
     }
+    @Test
+    @DisplayName("⭐ 任务认领与执行完成按链路分标签：认领数 = 执行次数（表字段会被覆盖，只有这个计数靠得住）")
+    void taskClaimAndExecuteShouldBeTaggedByLink() {
+        metrics.recordTaskClaimed(SqlPlatformMetrics.LINK_REVIEW);
+        metrics.recordTaskClaimed(SqlPlatformMetrics.LINK_REVIEW);
+        metrics.recordTaskClaimed(SqlPlatformMetrics.LINK_EXPORT);
+
+        metrics.recordTaskExecuted(SqlPlatformMetrics.LINK_REVIEW, "success");
+        metrics.recordTaskExecuted(SqlPlatformMetrics.LINK_EXPORT, "failed");
+
+        Counter reviewClaim = registry.find(SqlPlatformMetrics.TASK_CLAIMED)
+                .tag("link", SqlPlatformMetrics.LINK_REVIEW).counter();
+        Counter exportClaim = registry.find(SqlPlatformMetrics.TASK_CLAIMED)
+                .tag("link", SqlPlatformMetrics.LINK_EXPORT).counter();
+        Counter reviewDone = registry.find(SqlPlatformMetrics.TASK_EXECUTED)
+                .tag("link", SqlPlatformMetrics.LINK_REVIEW).tag("outcome", "success").counter();
+        Counter exportDone = registry.find(SqlPlatformMetrics.TASK_EXECUTED)
+                .tag("link", SqlPlatformMetrics.LINK_EXPORT).tag("outcome", "failed").counter();
+
+        assertNotNull(reviewClaim, "工单链路的认领计数没注册");
+        assertNotNull(exportClaim, "导出链路的认领计数没注册");
+        assertEquals(2.0, reviewClaim.count(), "工单认领了两次就必须记两次 —— 这就是「执行了几次」的依据");
+        assertEquals(1.0, exportClaim.count());
+        assertEquals(1.0, reviewDone.count());
+        assertEquals(1.0, exportDone.count());
+        // 成功与失败必须分开：混在一条线上就分不清"又跑了一次"和"这次失败了"
+        assertNull(registry.find(SqlPlatformMetrics.TASK_EXECUTED)
+                .tag("link", SqlPlatformMetrics.LINK_REVIEW).tag("outcome", "failed").counter(),
+                "工单只成功过一次，不该出现 failed 标签");
+    }
     private HikariDataSource newPool(int active, int idle, int total, int waiting) {
         HikariPoolMXBean bean = org.mockito.Mockito.mock(HikariPoolMXBean.class);
         org.mockito.Mockito.when(bean.getActiveConnections()).thenReturn(active);
